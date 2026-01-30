@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from graph_transform.cli import cli
-from graph_transform.typed_graph import (
+from graph_transform.core.typed_graph import (
     EdgeType,
     GraphEdge,
     GraphNode,
@@ -231,6 +231,142 @@ class TestApplyCommand:
         ])
         assert result.exit_code == 0
         assert out.exists()
+
+
+# =============================================================================
+# Tests: invalid operator usage
+# =============================================================================
+
+
+class TestInvalidOperator:
+    def test_apply_missing_required_params(self, runner, tmp_path):
+        """add_method requires class_name and method_name; omit method_name."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "add_method",
+            "--params", '{"class_name": "Foo"}',
+            "--no-invariants",
+            "--json",
+        ])
+        # Should fail — the rule can't be built without method_name
+        assert result.exit_code != 0
+
+    def test_apply_target_class_not_in_graph(self, runner, tmp_path):
+        """Apply add_method to a class that doesn't exist in the graph."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "add_method",
+            "--params", '{"class_name": "NonExistent", "method_name": "m"}',
+            "--no-invariants",
+            "--json",
+        ])
+        # Engine finds no match → failure
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["success"] is False
+
+    def test_apply_on_empty_graph(self, runner, tmp_path):
+        """Apply operator to a graph with zero nodes."""
+        g = TypedGraph()
+        gf = _write_graph(tmp_path, g)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "add_method",
+            "--params", '{"class_name": "Foo", "method_name": "m"}',
+            "--no-invariants",
+            "--json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["success"] is False
+
+    def test_apply_duplicate_method_with_invariants(self, runner, tmp_path):
+        """Adding a duplicate method should fail when invariants are enabled."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "add_method",
+            "--params", '{"class_name": "Foo", "method_name": "bar"}',
+            "--json",
+        ])
+        # bar already exists on Foo — unique-method-names invariant catches this
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["success"] is False
+
+    def test_apply_remove_nonexistent_method(self, runner, tmp_path):
+        """Remove a method that doesn't exist on the class."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "remove_method",
+            "--params", '{"class_name": "Foo", "method_name": "no_such_method"}',
+            "--no-invariants",
+            "--json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["success"] is False
+
+    def test_apply_rename_nonexistent_method(self, runner, tmp_path):
+        """Rename a method that doesn't exist."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "rename_method",
+            "--params", '{"old_name": "ghost", "new_name": "phantom"}',
+            "--no-invariants",
+            "--json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["success"] is False
+
+    def test_apply_empty_params(self, runner, tmp_path):
+        """Pass empty JSON object as params."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--operator", "add_method",
+            "--params", "{}",
+            "--no-invariants",
+            "--json",
+        ])
+        assert result.exit_code != 0
+
+    def test_dry_run_invalid_operator(self, runner, tmp_path):
+        """dry-run with an unknown operator name."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "dry-run", str(gf),
+            "--operator", "totally_bogus",
+            "--params", "{}",
+        ])
+        assert result.exit_code == 2
+
+    def test_apply_corrupted_graph_file(self, runner, tmp_path):
+        """Apply operator to a file with malformed JSON."""
+        bad = tmp_path / "corrupt.json"
+        bad.write_text('{"nodes": {}, "edges": [broken')
+        result = runner.invoke(cli, [
+            "apply", str(bad),
+            "--operator", "add_method",
+            "--params", '{"class_name": "X", "method_name": "y"}',
+        ])
+        assert result.exit_code == 2
+
+    def test_apply_graph_missing_edges_key(self, runner, tmp_path):
+        """Graph JSON missing the 'edges' key entirely."""
+        bad = tmp_path / "no_edges.json"
+        bad.write_text('{"nodes": {}}')
+        result = runner.invoke(cli, [
+            "apply", str(bad),
+            "--operator", "add_method",
+            "--params", '{"class_name": "X", "method_name": "y"}',
+        ])
+        assert result.exit_code == 2
 
 
 # =============================================================================

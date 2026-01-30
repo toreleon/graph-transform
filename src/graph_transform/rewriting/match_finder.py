@@ -8,8 +8,8 @@ m: L -> G for production rule application.
 
 from __future__ import annotations
 
-from .morphism import GraphMorphism
-from .typed_graph import EdgeType, GraphNode, NodeType, TypedGraph
+from graph_transform.core.morphism import GraphMorphism
+from graph_transform.core.typed_graph import EdgeType, GraphNode, NodeType, TypedGraph
 
 
 # =============================================================================

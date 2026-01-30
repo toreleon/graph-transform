@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
+from graph_transform.core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
 
 if TYPE_CHECKING:
     import graphviz

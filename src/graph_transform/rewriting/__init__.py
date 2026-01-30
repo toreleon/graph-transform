@@ -1,0 +1,17 @@
+"""Algebraic rewriting engine (DPO/SPO)."""
+
+from .invariants import Invariant, InvariantRegistry, InvariantViolation
+from .match_finder import MatchFinder
+from .production_rule import ProductionRule, RewriteMode, RewriteResult
+from .pushout_engine import PushoutEngine
+
+__all__ = [
+    "Invariant",
+    "InvariantRegistry",
+    "InvariantViolation",
+    "MatchFinder",
+    "ProductionRule",
+    "PushoutEngine",
+    "RewriteMode",
+    "RewriteResult",
+]

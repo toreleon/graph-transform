@@ -9,7 +9,7 @@ import sys
 import click
 
 from graph_transform.cli.formatting import print_error, print_success
-from graph_transform.serialization import load_graph
+from graph_transform.io.serialization import load_graph
 
 
 @click.command("visualize")
@@ -36,7 +36,7 @@ def visualize(graph_file: str, output: str, fmt: str, title: str) -> None:
         sys.exit(2)
 
     try:
-        from graph_transform.visualization import render_graph
+        from graph_transform.io.visualization import render_graph
     except ImportError as e:
         print_error(str(e))
         sys.exit(1)

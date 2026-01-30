@@ -7,7 +7,7 @@ Used by the CLI for help text, listing, and validation.
 
 from __future__ import annotations
 
-from graph_transform.primitive_operators import OperatorType
+from graph_transform.operators.primitive_operators import OperatorType
 
 
 # =============================================================================

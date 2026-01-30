@@ -15,8 +15,19 @@ Core concepts:
 - GraphTransformationEngine: Main engine combining all components
 """
 
-# Primitive operators (moved from agent/minisweagent/metrics/)
-from .primitive_operators import (
+# Core graph data structures
+from .core.nodes import ClassNode, FieldNode, ImportNode, ModuleNode
+from .core.morphism import GraphMorphism
+from .core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
+
+# Algebraic rewriting
+from .rewriting.production_rule import ProductionRule, RewriteMode, RewriteResult
+from .rewriting.match_finder import MatchFinder
+from .rewriting.pushout_engine import PushoutEngine
+from .rewriting.invariants import Invariant, InvariantRegistry, InvariantViolation
+
+# Operators
+from .operators.primitive_operators import (
     GraphOperator,
     MatchedSite,
     MatchError,
@@ -26,51 +37,24 @@ from .primitive_operators import (
     Pattern,
     RefactorPlan,
 )
-
-# Extended node types
-from .nodes import ClassNode, FieldNode, ImportNode, ModuleNode
-
-# Typed graph infrastructure
-from .typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
-
-# Graph morphisms
-from .morphism import GraphMorphism
-
-# Production rules
-from .production_rule import ProductionRule, RewriteMode, RewriteResult
-
-# Match finding
-from .match_finder import MatchFinder
-
-# Pushout engine
-from .pushout_engine import PushoutEngine
-
-# Invariant system
-from .invariants import Invariant, InvariantRegistry, InvariantViolation
-
-# Rule catalog
-from .rule_catalog import ProductionRuleCatalog
-
-# Transformation path
-from .transformation_path import RuleApplication, TransformationPath
+from .operators.rule_catalog import ProductionRuleCatalog
 
 # Engine
-from .engine import (
+from .engine.core import (
     GraphTransformationEngine,
     apply_operator,
     create_engine,
     verify_graph_invariants,
 )
+from .engine.transformation_path import RuleApplication, TransformationPath
 
-# Serialization
-from .serialization import load_graph, save_graph
-
-# Builder
-from .builder import build_graph_from_source
+# I/O
+from .io.serialization import load_graph, save_graph
+from .io.builder import build_graph_from_source
 
 # Visualization (optional -- graphviz must be installed)
 try:
-    from .visualization import diff_edges, diff_nodes, render_graph
+    from .io.visualization import diff_edges, diff_nodes, render_graph
 except ImportError:
     pass
 

@@ -15,10 +15,10 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from graph_transform.invariants import InvariantViolation
-from graph_transform.primitive_operators import OperatorType
-from graph_transform.production_rule import RewriteResult
-from graph_transform.typed_graph import EdgeType, NodeType, TypedGraph
+from graph_transform.core.typed_graph import EdgeType, NodeType, TypedGraph
+from graph_transform.operators.primitive_operators import OperatorType
+from graph_transform.rewriting.invariants import InvariantViolation
+from graph_transform.rewriting.production_rule import RewriteResult
 
 console = Console()
 err_console = Console(stderr=True)

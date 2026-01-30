@@ -17,9 +17,10 @@ import copy
 import uuid
 from typing import Any
 
-from .morphism import GraphMorphism
+from graph_transform.core.morphism import GraphMorphism
+from graph_transform.core.typed_graph import GraphEdge, GraphNode, TypedGraph
+
 from .production_rule import ProductionRule, RewriteMode, RewriteResult
-from .typed_graph import GraphEdge, GraphNode, TypedGraph
 
 
 # =============================================================================

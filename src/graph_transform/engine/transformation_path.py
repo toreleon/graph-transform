@@ -11,9 +11,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .morphism import GraphMorphism
-from .production_rule import ProductionRule, RewriteResult
-from .typed_graph import TypedGraph
+from graph_transform.core.morphism import GraphMorphism
+from graph_transform.core.typed_graph import TypedGraph
+from graph_transform.rewriting.production_rule import ProductionRule, RewriteResult
 
 
 # =============================================================================

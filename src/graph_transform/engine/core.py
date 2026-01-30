@@ -12,14 +12,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .invariants import InvariantRegistry, InvariantViolation
-from .match_finder import MatchFinder
-from .morphism import GraphMorphism
-from .production_rule import ProductionRule, RewriteMode, RewriteResult
-from .pushout_engine import PushoutEngine
-from .rule_catalog import ProductionRuleCatalog
+from graph_transform.core.morphism import GraphMorphism
+from graph_transform.core.typed_graph import TypedGraph
+from graph_transform.operators.rule_catalog import ProductionRuleCatalog
+from graph_transform.rewriting.invariants import InvariantRegistry, InvariantViolation
+from graph_transform.rewriting.match_finder import MatchFinder
+from graph_transform.rewriting.production_rule import ProductionRule, RewriteMode, RewriteResult
+from graph_transform.rewriting.pushout_engine import PushoutEngine
+
 from .transformation_path import RuleApplication, TransformationPath
-from .typed_graph import TypedGraph
 
 
 # =============================================================================

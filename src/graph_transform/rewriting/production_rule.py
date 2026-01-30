@@ -12,11 +12,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
-from .morphism import GraphMorphism
-from .typed_graph import TypedGraph
+from graph_transform.core.morphism import GraphMorphism
+from graph_transform.core.typed_graph import TypedGraph
 
 if TYPE_CHECKING:
-    from .invariants import Invariant
+    from graph_transform.rewriting.invariants import Invariant
 
 
 # =============================================================================
@@ -80,7 +80,7 @@ class ProductionRule:
 
     def deleted_edges(self) -> list:
         """Edges in L but not mapped from K."""
-        from .typed_graph import GraphEdge
+        from graph_transform.core.typed_graph import GraphEdge
 
         lhs_image = self.lhs_inclusion.image()
         return [

@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .primitive_operators import OperatorType
+from graph_transform.core.morphism import GraphMorphism
+from graph_transform.core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
+from graph_transform.rewriting.invariants import Invariant, InvariantViolation
+from graph_transform.rewriting.production_rule import ProductionRule
 
-from .invariants import Invariant, InvariantViolation
-from .morphism import GraphMorphism
-from .production_rule import ProductionRule
-from .typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
+from .primitive_operators import OperatorType
 
 
 # =============================================================================

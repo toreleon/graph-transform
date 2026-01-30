@@ -15,8 +15,8 @@ from graph_transform.cli.formatting import (
     print_violations,
     print_warning,
 )
-from graph_transform.engine import verify_graph_invariants
-from graph_transform.serialization import load_graph
+from graph_transform.engine.core import verify_graph_invariants
+from graph_transform.io.serialization import load_graph
 
 
 @click.command("verify")

@@ -6,21 +6,21 @@ from pathlib import Path
 
 import pytest
 
-from graph_transform.serialization import (
-    format_result_json,
-    load_graph,
-    load_json,
-    save_graph,
-    validate_graph_json,
-)
-from graph_transform.typed_graph import (
+from graph_transform.core.typed_graph import (
     EdgeType,
     GraphEdge,
     GraphNode,
     NodeType,
     TypedGraph,
 )
-from graph_transform.production_rule import RewriteResult
+from graph_transform.io.serialization import (
+    format_result_json,
+    load_graph,
+    load_json,
+    save_graph,
+    validate_graph_json,
+)
+from graph_transform.rewriting.production_rule import RewriteResult
 
 
 # =============================================================================

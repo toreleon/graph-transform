@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from graph_transform.builder import build_graph_from_source
-from graph_transform.typed_graph import EdgeType, NodeType
+from graph_transform.core.typed_graph import EdgeType, NodeType
+from graph_transform.io.builder import build_graph_from_source
 
 
 # =============================================================================

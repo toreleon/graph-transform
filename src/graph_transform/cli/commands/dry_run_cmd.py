@@ -16,8 +16,8 @@ from graph_transform.cli.formatting import (
     print_success,
 )
 from graph_transform.cli.operator_metadata import resolve_operator
-from graph_transform.engine import create_engine
-from graph_transform.serialization import format_result_json, load_graph
+from graph_transform.engine.core import create_engine
+from graph_transform.io.serialization import format_result_json, load_graph
 
 
 @click.command("dry-run")

@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from .typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
+from graph_transform.core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
 
 
 def build_graph_from_source(source_path: str | Path) -> TypedGraph:
@@ -46,6 +46,39 @@ def build_graph_from_source(source_path: str | Path) -> TypedGraph:
     else:
         raise ValueError(f"Path is neither a file nor a directory: {source_path}")
 
+    return graph
+
+
+def build_graph_from_files(file_paths: list[str | Path]) -> TypedGraph:
+    """Build a TypedGraph from a list of Python files.
+    
+    Useful for building subgraphs from grep results or specific file lists.
+
+    Args:
+        file_paths: List of paths to Python files.
+
+    Returns:
+        A TypedGraph representing the code structure.
+
+    Raises:
+        FileNotFoundError: If any file does not exist.
+        SyntaxError: If a Python file cannot be parsed.
+    """
+    if not file_paths:
+        raise ValueError("No files provided")
+    
+    graph = TypedGraph()
+    
+    for file_path in file_paths:
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not path.is_file():
+            raise ValueError(f"Not a file: {file_path}")
+        if path.suffix != ".py":
+            raise ValueError(f"Not a Python file: {file_path}")
+        _build_from_file(path, graph)
+    
     return graph
 
 

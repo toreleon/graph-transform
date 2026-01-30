@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .typed_graph import TypedGraph
-from .production_rule import RewriteResult
+from graph_transform.core.typed_graph import TypedGraph
+from graph_transform.rewriting.production_rule import RewriteResult
 
 
 def load_graph(source: str) -> TypedGraph:
