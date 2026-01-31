@@ -16,6 +16,7 @@ from graph_transform.core.morphism import GraphMorphism
 from graph_transform.core.typed_graph import TypedGraph
 
 if TYPE_CHECKING:
+    from graph_transform.rewriting.graph_change import GraphChangeSet
     from graph_transform.rewriting.invariants import Invariant
 
 
@@ -183,9 +184,10 @@ class RewriteResult:
     pre_violations: list[Any] = field(default_factory=list)
     post_violations: list[Any] = field(default_factory=list)
     rule_name: str | None = None
+    changes: GraphChangeSet | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "success": self.success,
             "errors": self.errors,
             "rule_name": self.rule_name,
@@ -193,3 +195,6 @@ class RewriteResult:
             "pre_violation_count": len(self.pre_violations),
             "post_violation_count": len(self.post_violations),
         }
+        if self.changes is not None:
+            result["changes"] = self.changes.to_dict()
+        return result

@@ -20,6 +20,7 @@ from typing import Any
 from graph_transform.core.morphism import GraphMorphism
 from graph_transform.core.typed_graph import GraphEdge, GraphNode, TypedGraph
 
+from .graph_change import ChangeType, EdgeChange, GraphChangeSet, NodeChange
 from .production_rule import ProductionRule, RewriteMode, RewriteResult
 
 
@@ -69,11 +70,13 @@ class PushoutEngine:
                     rule_name=rule.name,
                 )
 
-        # Compute the rewrite
+        # Compute the rewrite, recording all changes
+        changes = GraphChangeSet()
+
         if self.mode == RewriteMode.DPO:
-            result_graph = self._apply_dpo(rule, match, host)
+            result_graph = self._apply_dpo(rule, match, host, changes)
         else:
-            result_graph = self._apply_spo(rule, match, host)
+            result_graph = self._apply_spo(rule, match, host, changes)
 
         # Apply attribute transfer
         self._apply_attr_transfer(result_graph, rule, match, host)
@@ -83,6 +86,7 @@ class PushoutEngine:
             result_graph=result_graph,
             match=match,
             rule_name=rule.name,
+            changes=changes,
         )
 
     # -------------------------------------------------------------------------
@@ -144,6 +148,7 @@ class PushoutEngine:
         rule: ProductionRule,
         match: GraphMorphism,
         host: TypedGraph,
+        changes: GraphChangeSet,
     ) -> TypedGraph:
         """Apply DPO rewriting.
 
@@ -158,6 +163,14 @@ class PushoutEngine:
         for lhs_node_id in deleted_in_lhs:
             host_node_id = match.node_map.get(lhs_node_id)
             if host_node_id and host_node_id in result.nodes:
+                removed = result.nodes[host_node_id]
+                changes.node_changes.append(NodeChange(
+                    change_type=ChangeType.REMOVE_NODE,
+                    node_id=host_node_id,
+                    node_type=removed.node_type,
+                    attrs=dict(removed.attrs),
+                    host_node_id=host_node_id,
+                ))
                 result.remove_node(host_node_id)
 
         # Remove deleted edges (edges in L but not in K)
@@ -166,6 +179,12 @@ class PushoutEngine:
             mapped_src = match.node_map.get(lhs_edge.source)
             mapped_tgt = match.node_map.get(lhs_edge.target)
             if mapped_src and mapped_tgt:
+                changes.edge_changes.append(EdgeChange(
+                    change_type=ChangeType.REMOVE_EDGE,
+                    source=mapped_src,
+                    target=mapped_tgt,
+                    edge_type=lhs_edge.edge_type,
+                ))
                 result.remove_edge(mapped_src, mapped_tgt, lhs_edge.edge_type)
 
         # Step 2: Add created nodes (in R but not in K)
@@ -179,6 +198,13 @@ class PushoutEngine:
                 id=new_id,
                 node_type=rhs_node.node_type,
                 attrs=dict(rhs_node.attrs),
+            ))
+            changes.node_changes.append(NodeChange(
+                change_type=ChangeType.ADD_NODE,
+                node_id=rhs_node_id,
+                node_type=rhs_node.node_type,
+                attrs=dict(rhs_node.attrs),
+                host_node_id=new_id,
             ))
 
         # Step 3: Add created edges (in R but not in K)
@@ -197,9 +223,16 @@ class PushoutEngine:
                     edge_type=rhs_edge.edge_type,
                     attrs=dict(rhs_edge.attrs),
                 ))
+                changes.edge_changes.append(EdgeChange(
+                    change_type=ChangeType.ADD_EDGE,
+                    source=src_id,
+                    target=tgt_id,
+                    edge_type=rhs_edge.edge_type,
+                    attrs=dict(rhs_edge.attrs),
+                ))
 
         # Update attributes on preserved nodes
-        self._update_preserved_attrs(result, rule, match)
+        self._update_preserved_attrs(result, rule, match, changes)
 
         return result
 
@@ -212,6 +245,7 @@ class PushoutEngine:
         rule: ProductionRule,
         match: GraphMorphism,
         host: TypedGraph,
+        changes: GraphChangeSet,
     ) -> TypedGraph:
         """Apply SPO rewriting.
 
@@ -224,6 +258,24 @@ class PushoutEngine:
         for lhs_node_id in deleted_in_lhs:
             host_node_id = match.node_map.get(lhs_node_id)
             if host_node_id and host_node_id in result.nodes:
+                # Record auto-removed dangling edges before node removal
+                for edge in list(result.edges):
+                    if edge.source == host_node_id or edge.target == host_node_id:
+                        changes.edge_changes.append(EdgeChange(
+                            change_type=ChangeType.REMOVE_EDGE,
+                            source=edge.source,
+                            target=edge.target,
+                            edge_type=edge.edge_type,
+                            attrs=dict(edge.attrs),
+                        ))
+                removed = result.nodes[host_node_id]
+                changes.node_changes.append(NodeChange(
+                    change_type=ChangeType.REMOVE_NODE,
+                    node_id=host_node_id,
+                    node_type=removed.node_type,
+                    attrs=dict(removed.attrs),
+                    host_node_id=host_node_id,
+                ))
                 result.remove_node(host_node_id)
 
         # Remove deleted edges
@@ -232,6 +284,12 @@ class PushoutEngine:
             mapped_src = match.node_map.get(lhs_edge.source)
             mapped_tgt = match.node_map.get(lhs_edge.target)
             if mapped_src and mapped_tgt:
+                changes.edge_changes.append(EdgeChange(
+                    change_type=ChangeType.REMOVE_EDGE,
+                    source=mapped_src,
+                    target=mapped_tgt,
+                    edge_type=lhs_edge.edge_type,
+                ))
                 result.remove_edge(mapped_src, mapped_tgt, lhs_edge.edge_type)
 
         # Add created nodes
@@ -245,6 +303,13 @@ class PushoutEngine:
                 id=new_id,
                 node_type=rhs_node.node_type,
                 attrs=dict(rhs_node.attrs),
+            ))
+            changes.node_changes.append(NodeChange(
+                change_type=ChangeType.ADD_NODE,
+                node_id=rhs_node_id,
+                node_type=rhs_node.node_type,
+                attrs=dict(rhs_node.attrs),
+                host_node_id=new_id,
             ))
 
         # Add created edges
@@ -263,9 +328,16 @@ class PushoutEngine:
                     edge_type=rhs_edge.edge_type,
                     attrs=dict(rhs_edge.attrs),
                 ))
+                changes.edge_changes.append(EdgeChange(
+                    change_type=ChangeType.ADD_EDGE,
+                    source=src_id,
+                    target=tgt_id,
+                    edge_type=rhs_edge.edge_type,
+                    attrs=dict(rhs_edge.attrs),
+                ))
 
         # Update preserved attrs
-        self._update_preserved_attrs(result, rule, match)
+        self._update_preserved_attrs(result, rule, match, changes)
 
         return result
 
@@ -339,6 +411,7 @@ class PushoutEngine:
         result: TypedGraph,
         rule: ProductionRule,
         match: GraphMorphism,
+        changes: GraphChangeSet,
     ) -> None:
         """Update attributes on preserved nodes from RHS specification."""
         rhs_inverse = rule.rhs_inclusion.inverse_map()
@@ -361,9 +434,21 @@ class PushoutEngine:
             # Update attrs that differ between LHS and RHS
             lhs_node = rule.lhs.get_node(l_id)
             if lhs_node:
+                old_attrs = dict(result.nodes[host_id].attrs)
+                changed = False
                 for key, value in rhs_node.attrs.items():
                     if value is not None and value != lhs_node.attrs.get(key):
                         result.nodes[host_id].attrs[key] = value
+                        changed = True
+                if changed:
+                    changes.node_changes.append(NodeChange(
+                        change_type=ChangeType.UPDATE_ATTRS,
+                        node_id=host_id,
+                        node_type=rhs_node.node_type,
+                        attrs=dict(result.nodes[host_id].attrs),
+                        old_attrs=old_attrs,
+                        host_node_id=host_id,
+                    ))
 
     def _apply_attr_transfer(
         self,

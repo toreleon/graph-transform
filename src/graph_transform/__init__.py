@@ -21,6 +21,7 @@ from .core.morphism import GraphMorphism
 from .core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
 
 # Algebraic rewriting
+from .rewriting.graph_change import ChangeType, GraphChangeSet
 from .rewriting.production_rule import ProductionRule, RewriteMode, RewriteResult
 from .rewriting.match_finder import MatchFinder
 from .rewriting.pushout_engine import PushoutEngine
@@ -90,6 +91,9 @@ __all__ = [
     "TypedGraph",
     # Morphism
     "GraphMorphism",
+    # Graph changes
+    "ChangeType",
+    "GraphChangeSet",
     # Production rules
     "ProductionRule",
     "RewriteMode",
