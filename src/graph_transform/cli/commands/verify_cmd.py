@@ -17,6 +17,9 @@ from graph_transform.cli.formatting import (
 )
 from graph_transform.engine.core import verify_graph_invariants
 from graph_transform.io.serialization import load_graph
+from graph_transform.rewriting.invariants import InvariantLayer, InvariantSeverity
+
+_LAYER_CHOICES = [layer.name.lower() for layer in InvariantLayer]
 
 
 @click.command("verify")
@@ -27,7 +30,16 @@ from graph_transform.io.serialization import load_graph
     help="Treat warnings as errors (exit 1).",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output violations as JSON.")
-def verify_graph(graph_file: str, strict: bool, as_json: bool) -> None:
+@click.option(
+    "--layer",
+    "layer_names",
+    multiple=True,
+    type=click.Choice(_LAYER_CHOICES, case_sensitive=False),
+    help="Only check specific layers (can be repeated).",
+)
+def verify_graph(
+    graph_file: str, strict: bool, as_json: bool, layer_names: tuple[str, ...]
+) -> None:
     """Run all invariant checks on a graph."""
     try:
         graph = load_graph(graph_file)
@@ -35,7 +47,11 @@ def verify_graph(graph_file: str, strict: bool, as_json: bool) -> None:
         print_error(str(e))
         sys.exit(2)
 
-    violations = verify_graph_invariants(graph)
+    layers: set[InvariantLayer] | None = None
+    if layer_names:
+        layers = {InvariantLayer[name.upper()] for name in layer_names}
+
+    violations = verify_graph_invariants(graph, layers=layers)
 
     if as_json:
         data = [v.to_dict() for v in violations]
@@ -46,8 +62,8 @@ def verify_graph(graph_file: str, strict: bool, as_json: bool) -> None:
         else:
             print_success("All invariants satisfied.")
 
-    errors = [v for v in violations if v.severity == "error"]
-    warnings = [v for v in violations if v.severity == "warning"]
+    errors = [v for v in violations if v.severity == InvariantSeverity.ERROR]
+    warnings = [v for v in violations if v.severity == InvariantSeverity.WARNING]
 
     if errors:
         print_error(f"{len(errors)} error(s) found.")

@@ -24,7 +24,16 @@ from .core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGra
 from .rewriting.production_rule import ProductionRule, RewriteMode, RewriteResult
 from .rewriting.match_finder import MatchFinder
 from .rewriting.pushout_engine import PushoutEngine
-from .rewriting.invariants import Invariant, InvariantRegistry, InvariantViolation
+from .rewriting.invariants import (
+    EdgeConstraint,
+    GraphSchema,
+    Invariant,
+    InvariantLayer,
+    InvariantRegistry,
+    InvariantSeverity,
+    InvariantViolation,
+    ScopeRule,
+)
 
 # Operators
 from .operators.primitive_operators import (
@@ -93,6 +102,11 @@ __all__ = [
     "Invariant",
     "InvariantViolation",
     "InvariantRegistry",
+    "InvariantSeverity",
+    "InvariantLayer",
+    "GraphSchema",
+    "EdgeConstraint",
+    "ScopeRule",
     # Rule catalog
     "ProductionRuleCatalog",
     # Path

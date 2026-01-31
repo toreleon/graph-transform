@@ -12,7 +12,12 @@ from typing import Any, Callable
 
 from graph_transform.core.morphism import GraphMorphism
 from graph_transform.core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
-from graph_transform.rewriting.invariants import Invariant, InvariantViolation
+from graph_transform.rewriting.invariants import (
+    Invariant,
+    InvariantLayer,
+    InvariantSeverity,
+    InvariantViolation,
+)
 from graph_transform.rewriting.production_rule import ProductionRule
 
 from .primitive_operators import OperatorType
@@ -109,6 +114,108 @@ def _node_exists_postcondition(
 ) -> Invariant:
     """Create a postcondition that a node with given attr must exist."""
     return _node_exists_precondition(node_type, attr_key, attr_value, inv_name)
+
+
+def _edge_exists_precondition(
+    source_type: NodeType,
+    source_attr: str,
+    source_val: str,
+    target_type: NodeType,
+    target_attr: str,
+    target_val: str,
+    edge_type: EdgeType,
+    inv_name: str,
+) -> Invariant:
+    """Create a precondition that a specific edge must exist."""
+    def check(graph: TypedGraph) -> list[InvariantViolation]:
+        sources = [
+            n for n in graph.get_nodes_by_attr(source_attr, source_val)
+            if n.node_type == source_type
+        ]
+        targets = [
+            n for n in graph.get_nodes_by_attr(target_attr, target_val)
+            if n.node_type == target_type
+        ]
+        if not sources or not targets:
+            return [InvariantViolation(
+                invariant_name=inv_name,
+                message=(
+                    f"No {edge_type.value} edge from {source_type.value} "
+                    f"'{source_val}' to {target_type.value} '{target_val}'"
+                ),
+                layer=InvariantLayer.REFERENCE,
+            )]
+        for src in sources:
+            for tgt in targets:
+                if graph.has_edge(src.id, tgt.id, edge_type):
+                    return []
+        return [InvariantViolation(
+            invariant_name=inv_name,
+            message=(
+                f"No {edge_type.value} edge from {source_type.value} "
+                f"'{source_val}' to {target_type.value} '{target_val}'"
+            ),
+            layer=InvariantLayer.REFERENCE,
+        )]
+    return Invariant(
+        name=inv_name,
+        description=f"Requires {edge_type.value} edge from '{source_val}' to '{target_val}'",
+        check=check,
+        layer=InvariantLayer.REFERENCE,
+    )
+
+
+def _inheritance_precondition(
+    subclass: str, superclass: str, inv_name: str = "inheritance_exists"
+) -> Invariant:
+    """Create a precondition that subclass INHERITS from superclass."""
+    return _edge_exists_precondition(
+        source_type=NodeType.CLASS,
+        source_attr="name",
+        source_val=subclass,
+        target_type=NodeType.CLASS,
+        target_attr="name",
+        target_val=superclass,
+        edge_type=EdgeType.INHERITS,
+        inv_name=inv_name,
+    )
+
+
+def _no_references_precondition(
+    node_type: NodeType, attr_key: str, attr_value: str, inv_name: str
+) -> Invariant:
+    """Precondition: no CALLS/REFERENCES edges point to this node (safe deletion)."""
+    def check(graph: TypedGraph) -> list[InvariantViolation]:
+        targets = [
+            n for n in graph.get_nodes_by_attr(attr_key, attr_value)
+            if n.node_type == node_type
+        ]
+        for tgt in targets:
+            refs = [
+                e for e in graph.get_edges_to(tgt.id)
+                if e.edge_type in (EdgeType.CALLS, EdgeType.REFERENCES)
+            ]
+            if refs:
+                return [InvariantViolation(
+                    invariant_name=inv_name,
+                    message=(
+                        f"{node_type.value} '{attr_value}' still has "
+                        f"{len(refs)} reference(s)"
+                    ),
+                    severity=InvariantSeverity.WARNING,
+                    layer=InvariantLayer.REFERENCE,
+                    node_id=tgt.id,
+                    related_nodes=[e.source for e in refs],
+                    fix_hint="Remove or update all references before deletion",
+                )]
+        return []
+    return Invariant(
+        name=inv_name,
+        description=f"No references to {node_type.value} '{attr_value}'",
+        check=check,
+        severity=InvariantSeverity.WARNING,
+        layer=InvariantLayer.REFERENCE,
+    )
 
 
 # =============================================================================
@@ -370,6 +477,7 @@ class ProductionRuleCatalog:
                 _node_exists_precondition(NodeType.CLASS, "name", source, "subclass_exists"),
                 _node_exists_precondition(NodeType.CLASS, "name", target, "superclass_exists"),
                 _node_exists_precondition(NodeType.FUNCTION, "name", method_name, "method_exists"),
+                _inheritance_precondition(source, target, "inherits_from_target"),
             ],
             parameters=p,
             description=f"Pull up method {method_name} from {source} to {target}",
@@ -396,6 +504,7 @@ class ProductionRuleCatalog:
             preconditions=[
                 _node_exists_precondition(NodeType.CLASS, "name", source, "superclass_exists"),
                 _node_exists_precondition(NodeType.CLASS, "name", target, "subclass_exists"),
+                _inheritance_precondition(target, source, "inherits_from_source"),
             ],
             parameters=p,
             description=f"Push down method {method_name} from {source} to {target}",
@@ -585,7 +694,10 @@ class ProductionRuleCatalog:
             lhs_nodes=[cls_node], lhs_edges=[],
             interface_nodes=[], interface_edges=[],
             rhs_nodes=[], rhs_edges=[],
-            preconditions=[_node_exists_precondition(NodeType.CLASS, "name", cls_name, "class_exists")],
+            preconditions=[
+                _node_exists_precondition(NodeType.CLASS, "name", cls_name, "class_exists"),
+                _no_references_precondition(NodeType.CLASS, "name", cls_name, "no_class_references"),
+            ],
             parameters=p, description=f"Remove class {cls_name}", category="class",
         )
 

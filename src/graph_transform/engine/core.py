@@ -15,7 +15,12 @@ from typing import Any
 from graph_transform.core.morphism import GraphMorphism
 from graph_transform.core.typed_graph import TypedGraph
 from graph_transform.operators.rule_catalog import ProductionRuleCatalog
-from graph_transform.rewriting.invariants import InvariantRegistry, InvariantViolation
+from graph_transform.rewriting.invariants import (
+    InvariantLayer,
+    InvariantRegistry,
+    InvariantSeverity,
+    InvariantViolation,
+)
 from graph_transform.rewriting.match_finder import MatchFinder
 from graph_transform.rewriting.production_rule import ProductionRule, RewriteMode, RewriteResult
 from graph_transform.rewriting.pushout_engine import PushoutEngine
@@ -108,7 +113,7 @@ class GraphTransformationEngine:
             pre_violations = self.invariants.verify_preconditions(
                 rule.preconditions, graph
             )
-            if any(v.severity == "error" for v in pre_violations):
+            if any(v.severity == InvariantSeverity.ERROR for v in pre_violations):
                 return RewriteResult(
                     success=False,
                     errors=[f"Precondition violated: {v.message}" for v in pre_violations],
@@ -120,7 +125,7 @@ class GraphTransformationEngine:
         # Step 3: Verify graph invariants on G
         if self.check_invariants:
             graph_violations = self.invariants.verify_graph(graph)
-            errors = [v for v in graph_violations if v.severity == "error"]
+            errors = [v for v in graph_violations if v.severity == InvariantSeverity.ERROR]
             if errors:
                 return RewriteResult(
                     success=False,
@@ -140,7 +145,7 @@ class GraphTransformationEngine:
             post_violations = self.invariants.verify_postconditions(
                 rule.postconditions, result.result_graph
             )
-            if any(v.severity == "error" for v in post_violations):
+            if any(v.severity == InvariantSeverity.ERROR for v in post_violations):
                 return RewriteResult(
                     success=False,
                     result_graph=result.result_graph,
@@ -153,7 +158,7 @@ class GraphTransformationEngine:
         # Step 6: Verify graph invariants on G'
         if self.check_invariants and result.result_graph:
             post_graph_violations = self.invariants.verify_graph(result.result_graph)
-            errors = [v for v in post_graph_violations if v.severity == "error"]
+            errors = [v for v in post_graph_violations if v.severity == InvariantSeverity.ERROR]
             if errors:
                 return RewriteResult(
                     success=False,
@@ -281,7 +286,7 @@ class GraphTransformationEngine:
             pre_violations = self.invariants.verify_preconditions(
                 rule.preconditions, graph
             )
-            if any(v.severity == "error" for v in pre_violations):
+            if any(v.severity == InvariantSeverity.ERROR for v in pre_violations):
                 return RewriteResult(
                     success=False,
                     errors=[f"Precondition: {v.message}" for v in pre_violations],
@@ -333,7 +338,18 @@ def apply_operator(
     return engine.apply_rule(rule, graph)
 
 
-def verify_graph_invariants(graph: TypedGraph) -> list[InvariantViolation]:
-    """Check all graph invariants."""
+def verify_graph_invariants(
+    graph: TypedGraph,
+    *,
+    layers: set[InvariantLayer] | None = None,
+    min_severity: InvariantSeverity = InvariantSeverity.INFO,
+    stop_on_layer_error: bool = False,
+) -> list[InvariantViolation]:
+    """Check graph invariants, optionally filtered by layer/severity."""
     registry = InvariantRegistry()
-    return registry.verify_graph(graph)
+    return registry.verify_graph(
+        graph,
+        layers=layers,
+        min_severity=min_severity,
+        stop_on_layer_error=stop_on_layer_error,
+    )

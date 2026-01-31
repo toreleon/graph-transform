@@ -117,8 +117,8 @@ class TestVerifyCommand:
 
     def test_verify_dangling_edges(self, runner, tmp_path):
         g = TypedGraph()
-        g.add_node(GraphNode("a", NodeType.CLASS, {"name": "A"}))
-        g.add_edge(GraphEdge("a", "nonexistent", EdgeType.CONTAINS_METHOD))
+        g.add_node(GraphNode("c1", NodeType.CALL, {"callee": "missing_func"}))
+        g.add_edge(GraphEdge("c1", "nonexistent", EdgeType.CALLS))
         gf = _write_graph(tmp_path, g)
         result = runner.invoke(cli, ["verify", str(gf)])
         assert result.exit_code == 1

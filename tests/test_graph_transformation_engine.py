@@ -12,7 +12,9 @@ from graph_transform import (
     GraphTransformationEngine,
     ImportNode,
     Invariant,
+    InvariantLayer,
     InvariantRegistry,
+    InvariantSeverity,
     InvariantViolation,
     MatchFinder,
     ModuleNode,
@@ -625,22 +627,29 @@ class TestSPORewriting:
 class TestInvariants:
     def test_no_dangling_edges_pass(self):
         g = make_simple_graph()
-        violations = verify_graph_invariants(g)
-        dangling = [v for v in violations if v.invariant_name == "no_dangling_edges"]
+        registry = InvariantRegistry()
+        registry.enable("schema_conformance")
+        violations = registry.verify_graph(g)
+        dangling = [v for v in violations if v.invariant_name == "schema_conformance"]
         assert len(dangling) == 0
 
     def test_no_dangling_edges_fail(self):
         g = TypedGraph()
         g.add_node(GraphNode("a", NodeType.CLASS, {}))
         g.edges.append(GraphEdge("a", "missing", EdgeType.CONTAINS_METHOD))
-        violations = verify_graph_invariants(g)
-        dangling = [v for v in violations if v.invariant_name == "no_dangling_edges"]
+        registry = InvariantRegistry()
+        registry.enable("schema_conformance")
+        violations = registry.verify_graph(g)
+        dangling = [
+            v for v in violations
+            if v.invariant_name == "schema_conformance" and "Dangling" in v.message
+        ]
         assert len(dangling) == 1
 
     def test_unique_method_names_pass(self):
         g = make_simple_graph()
         violations = verify_graph_invariants(g)
-        dupes = [v for v in violations if v.invariant_name == "unique_function_names_in_class"]
+        dupes = [v for v in violations if v.invariant_name == "scope_name_uniqueness"]
         assert len(dupes) == 0
 
     def test_unique_method_names_fail(self):
@@ -651,7 +660,7 @@ class TestInvariants:
         g.add_edge(GraphEdge("class:C", "f1", EdgeType.CONTAINS_METHOD))
         g.add_edge(GraphEdge("class:C", "f2", EdgeType.CONTAINS_METHOD))
         violations = verify_graph_invariants(g)
-        dupes = [v for v in violations if v.invariant_name == "unique_function_names_in_class"]
+        dupes = [v for v in violations if v.invariant_name == "scope_name_uniqueness"]
         assert len(dupes) == 1
 
     def test_valid_inheritance_self_loop(self):
@@ -659,7 +668,7 @@ class TestInvariants:
         g.add_node(make_class_node("A"))
         g.add_edge(GraphEdge("class:A", "class:A", EdgeType.INHERITS))
         violations = verify_graph_invariants(g)
-        inh = [v for v in violations if v.invariant_name == "valid_inheritance"]
+        inh = [v for v in violations if v.invariant_name == "inheritance_dag"]
         assert len(inh) >= 1
 
     def test_custom_invariant(self):
@@ -952,7 +961,7 @@ class TestGraphTransformationEngine:
         engine = create_engine()
         graph = make_simple_graph()
         violations = engine.verify_graph(graph)
-        errors = [v for v in violations if v.severity == "error"]
+        errors = [v for v in violations if v.severity == InvariantSeverity.ERROR]
         assert len(errors) == 0
 
 

@@ -17,7 +17,7 @@ from rich.tree import Tree
 
 from graph_transform.core.typed_graph import EdgeType, NodeType, TypedGraph
 from graph_transform.operators.primitive_operators import OperatorType
-from graph_transform.rewriting.invariants import InvariantViolation
+from graph_transform.rewriting.invariants import InvariantSeverity, InvariantViolation
 from graph_transform.rewriting.production_rule import RewriteResult
 
 console = Console()
@@ -127,17 +127,25 @@ def print_violations(violations: list[InvariantViolation]) -> None:
         border_style="red",
     )
     table.add_column("Severity", style="bold", min_width=8)
+    table.add_column("Layer", style="cyan", min_width=10)
     table.add_column("Invariant", style="yellow", min_width=20)
     table.add_column("Message", style="white")
     table.add_column("Node", style="dim")
+    table.add_column("Fix Hint", style="green dim")
 
     for v in violations:
-        sev_style = "red" if v.severity == "error" else "yellow"
+        sev_style = {
+            InvariantSeverity.ERROR: "red",
+            InvariantSeverity.WARNING: "yellow",
+            InvariantSeverity.INFO: "blue",
+        }.get(v.severity, "white")
         table.add_row(
-            Text(v.severity.upper(), style=sev_style),
+            Text(v.severity.value.upper(), style=sev_style),
+            v.layer.name.lower() if hasattr(v, "layer") else "",
             v.invariant_name,
             v.message,
             v.node_id or "",
+            v.fix_hint or "",
         )
 
     console.print(table)
