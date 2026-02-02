@@ -28,6 +28,18 @@ from .primitive_operators import OperatorType
 # =============================================================================
 
 
+def _normalize_module_name(name: str) -> str:
+    """Convert a dotted import path to a file-stem module name.
+
+    The graph builder stores MODULE nodes with ``name = Path(file).stem``,
+    e.g. ``params`` for ``fastapi/params.py``.  Callers (especially LLM
+    agents) often pass the full dotted import path instead, like
+    ``fastapi.params``.  This helper extracts the last component so that
+    module operators match correctly regardless of which form is used.
+    """
+    return name.rsplit(".", 1)[-1] if "." in name else name
+
+
 def _make_rule(
     name: str,
     op_type: OperatorType,
@@ -287,11 +299,25 @@ class ProductionRuleCatalog:
         self, op_type: OperatorType, params: dict[str, Any]
     ) -> ProductionRule:
         """Create a production rule for the given operator type."""
+        rules = self.create_rules(op_type, params)
+        return rules[0]
+
+    def create_rules(
+        self, op_type: OperatorType, params: dict[str, Any]
+    ) -> list[ProductionRule]:
+        """Create production rule(s) for the given operator type.
+
+        Most operators produce a single rule. Some (like update_import)
+        may produce multiple rules to handle different AST patterns.
+        """
         method_name = self._DISPATCH.get(op_type)
         if method_name is None:
             raise ValueError(f"Unsupported operator type: {op_type}")
         method = getattr(self, method_name)
-        return method(params)
+        result = method(params)
+        if isinstance(result, list):
+            return result
+        return [result]
 
     # =========================================================================
     # Method-Level Rules
@@ -380,7 +406,7 @@ class ProductionRuleCatalog:
         )
 
     def _move_method(self, p: dict) -> ProductionRule:
-        """L: {src_class, method, edge}. K: {method}. R: {dst_class, method, edge}."""
+        """L: {src, dst, method, edge(src→method)}. K: {src, dst, method}. R: {src, dst, method, edge(dst→method)}."""
         src_class = p["source_class"]
         dst_class = p["target_class"]
         method_name = p["method_name"]
@@ -390,11 +416,11 @@ class ProductionRuleCatalog:
         return _make_rule(
             name=f"move_method:{method_name}:{src_class}->{dst_class}",
             op_type=OperatorType.MOVE_METHOD,
-            lhs_nodes=[src_node, method_node],
+            lhs_nodes=[src_node, dst_node, method_node],
             lhs_edges=[GraphEdge("src", "method", EdgeType.CONTAINS_METHOD)],
-            interface_nodes=[method_node],
+            interface_nodes=[src_node, dst_node, method_node],
             interface_edges=[],
-            rhs_nodes=[dst_node, method_node],
+            rhs_nodes=[src_node, dst_node, method_node],
             rhs_edges=[GraphEdge("dst", "method", EdgeType.CONTAINS_METHOD)],
             preconditions=[
                 _node_exists_precondition(NodeType.CLASS, "name", src_class, "src_class_exists"),
@@ -609,10 +635,10 @@ class ProductionRuleCatalog:
         return _make_rule(
             name=f"move_field:{field_name}:{src}->{dst}",
             op_type=OperatorType.MOVE_FIELD,
-            lhs_nodes=[src_node, field_node],
+            lhs_nodes=[src_node, dst_node, field_node],
             lhs_edges=[GraphEdge("src", "field", EdgeType.CONTAINS_FIELD)],
-            interface_nodes=[field_node], interface_edges=[],
-            rhs_nodes=[dst_node, field_node],
+            interface_nodes=[src_node, dst_node, field_node], interface_edges=[],
+            rhs_nodes=[src_node, dst_node, field_node],
             rhs_edges=[GraphEdge("dst", "field", EdgeType.CONTAINS_FIELD)],
             preconditions=[
                 _node_exists_precondition(NodeType.CLASS, "name", src, "src_exists"),
@@ -722,14 +748,14 @@ class ProductionRuleCatalog:
 
     def _move_class(self, p: dict) -> ProductionRule:
         cls_name = p["class_name"]
-        target_mod = p["target_module"]
+        target_mod = _normalize_module_name(p["target_module"])
         cls_node = GraphNode("cls", NodeType.CLASS, {"name": cls_name})
         mod_node = GraphNode("mod", NodeType.MODULE, {"name": target_mod})
         return _make_rule(
             name=f"move_class:{cls_name}->{target_mod}",
             op_type=OperatorType.MOVE_CLASS,
-            lhs_nodes=[cls_node], lhs_edges=[],
-            interface_nodes=[cls_node], interface_edges=[],
+            lhs_nodes=[cls_node, mod_node], lhs_edges=[],
+            interface_nodes=[cls_node, mod_node], interface_edges=[],
             rhs_nodes=[cls_node, mod_node],
             rhs_edges=[GraphEdge("cls", "mod", EdgeType.DEFINED_IN)],
             preconditions=[
@@ -871,7 +897,7 @@ class ProductionRuleCatalog:
     # =========================================================================
 
     def _create_module(self, p: dict) -> ProductionRule:
-        mod_name = p["module_name"]
+        mod_name = _normalize_module_name(p["module_name"])
         mod_node = GraphNode("mod", NodeType.MODULE, {"name": mod_name, "file": p.get("file", "")})
         return _make_rule(
             name=f"create_module:{mod_name}",
@@ -885,7 +911,7 @@ class ProductionRuleCatalog:
         )
 
     def _delete_module(self, p: dict) -> ProductionRule:
-        mod_name = p["module_name"]
+        mod_name = _normalize_module_name(p["module_name"])
         mod_node = GraphNode("mod", NodeType.MODULE, {"name": mod_name})
         return _make_rule(
             name=f"delete_module:{mod_name}",
@@ -898,8 +924,8 @@ class ProductionRuleCatalog:
         )
 
     def _rename_module(self, p: dict) -> ProductionRule:
-        old_name = p["old_name"]
-        new_name = p["new_name"]
+        old_name = _normalize_module_name(p["old_name"])
+        new_name = _normalize_module_name(p["new_name"])
         lhs_node = GraphNode("mod", NodeType.MODULE, {"name": old_name})
         k_node = GraphNode("mod", NodeType.MODULE, {})
         rhs_node = GraphNode("mod", NodeType.MODULE, {"name": new_name})
@@ -915,15 +941,15 @@ class ProductionRuleCatalog:
 
     def _move_to_module(self, p: dict) -> ProductionRule:
         item_name = p["item_name"]
-        target_mod = p["target_module"]
+        target_mod = _normalize_module_name(p["target_module"])
         item_type = NodeType(p.get("item_type", "function"))
         item_node = GraphNode("item", item_type, {"name": item_name})
         mod_node = GraphNode("mod", NodeType.MODULE, {"name": target_mod})
         return _make_rule(
             name=f"move_to_module:{item_name}->{target_mod}",
             op_type=OperatorType.MOVE_TO_MODULE,
-            lhs_nodes=[item_node], lhs_edges=[],
-            interface_nodes=[item_node], interface_edges=[],
+            lhs_nodes=[item_node, mod_node], lhs_edges=[],
+            interface_nodes=[item_node, mod_node], interface_edges=[],
             rhs_nodes=[item_node, mod_node],
             rhs_edges=[GraphEdge("item", "mod", EdgeType.DEFINED_IN)],
             preconditions=[_node_exists_precondition(NodeType.MODULE, "name", target_mod, "module_exists")],
@@ -931,8 +957,8 @@ class ProductionRuleCatalog:
         )
 
     def _merge_modules(self, p: dict) -> ProductionRule:
-        src_name = p["source_module"]
-        tgt_name = p["target_module"]
+        src_name = _normalize_module_name(p["source_module"])
+        tgt_name = _normalize_module_name(p["target_module"])
         src_node = GraphNode("src", NodeType.MODULE, {"name": src_name})
         tgt_node = GraphNode("tgt", NodeType.MODULE, {"name": tgt_name})
         return _make_rule(
@@ -985,29 +1011,62 @@ class ProductionRuleCatalog:
             parameters=p, description=f"Remove import {mod}.{name}", category="reference",
         )
 
-    def _update_import(self, p: dict) -> ProductionRule:
-        old_mod = p["old_module"]
-        new_mod = p["new_module"]
-        lhs_node = GraphNode("imp", NodeType.IMPORT, {"module": old_mod})
+    def _update_import(self, p: dict) -> ProductionRule | list[ProductionRule]:
+        old_module = p["old_module"]
+        new_module = p["new_module"]
+
+        # Rule 1: Match `from old_module import X` pattern
+        # e.g., from ansible.module_utils.facts.namespace import PrefixFactNamespace
+        lhs_node = GraphNode("imp", NodeType.IMPORT, {"module": old_module})
         k_node = GraphNode("imp", NodeType.IMPORT, {})
-        rhs_node = GraphNode("imp", NodeType.IMPORT, {
-            "module": new_mod,
-            "name": p.get("new_name", p.get("name")),
-        })
-        return _make_rule(
-            name=f"update_import:{old_mod}->{new_mod}",
+        rhs_node = GraphNode("imp", NodeType.IMPORT, {"module": new_module})
+
+        rule_direct = _make_rule(
+            name=f"update_import:{old_module}->{new_module}",
             op_type=OperatorType.UPDATE_IMPORT,
             lhs_nodes=[lhs_node], lhs_edges=[],
             interface_nodes=[k_node], interface_edges=[],
             rhs_nodes=[rhs_node], rhs_edges=[],
-            preconditions=[_node_exists_precondition(NodeType.IMPORT, "module", old_mod, "old_exists")],
-            parameters=p, description=f"Update import {old_mod} to {new_mod}", category="reference",
+            preconditions=[_node_exists_precondition(NodeType.IMPORT, "module", old_module, "old_exists")],
+            parameters=p,
+            description=f"Update import {old_module} to {new_module}",
+            category="reference",
         )
+
+        # Rule 2: Match `from parent import submodule` pattern
+        # e.g., from ansible.module_utils.facts import namespace
+        # Here the IMPORT node has module=parent and name=child
+        if "." in old_module and "." in new_module:
+            old_parent, old_child = old_module.rsplit(".", 1)
+            new_parent, new_child = new_module.rsplit(".", 1)
+
+            lhs_sub = GraphNode("imp", NodeType.IMPORT, {
+                "module": old_parent, "name": old_child,
+            })
+            k_sub = GraphNode("imp", NodeType.IMPORT, {})
+            rhs_sub = GraphNode("imp", NodeType.IMPORT, {
+                "module": new_parent, "name": new_child,
+            })
+
+            rule_submodule = _make_rule(
+                name=f"update_import:{old_parent}.{old_child}->{new_parent}.{new_child}(submodule)",
+                op_type=OperatorType.UPDATE_IMPORT,
+                lhs_nodes=[lhs_sub], lhs_edges=[],
+                interface_nodes=[k_sub], interface_edges=[],
+                rhs_nodes=[rhs_sub], rhs_edges=[],
+                preconditions=[],
+                parameters=p,
+                description=f"Update submodule import {old_child} to {new_child}",
+                category="reference",
+            )
+            return [rule_direct, rule_submodule]
+
+        return rule_direct
 
     def _update_call(self, p: dict) -> ProductionRule:
         old_callee = p["old_callee"]
         new_callee = p["new_callee"]
-        lhs_node = GraphNode("call", NodeType.CALL, {"callee": old_callee})
+        lhs_node = GraphNode("call", NodeType.CALL, self._call_attrs(old_callee, p))
         k_node = GraphNode("call", NodeType.CALL, {})
         rhs_node = GraphNode("call", NodeType.CALL, {"callee": new_callee})
         return _make_rule(
@@ -1038,11 +1097,20 @@ class ProductionRuleCatalog:
     # Call-Site Level Rules
     # =========================================================================
 
+    @staticmethod
+    def _call_attrs(callee: str, p: dict) -> dict:
+        """Build CALL node attrs, optionally filtering by call_type."""
+        attrs: dict = {"callee": callee}
+        call_type = p.get("call_type")
+        if call_type in ("direct", "method"):
+            attrs["call_type"] = call_type
+        return attrs
+
     def _add_arg(self, p: dict) -> ProductionRule:
         callee = p["callee"]
         arg_name = p["arg_name"]
         arg_value = p.get("arg_value")
-        call_node = GraphNode("call", NodeType.CALL, {"callee": callee})
+        call_node = GraphNode("call", NodeType.CALL, self._call_attrs(callee, p))
         arg_node = GraphNode("arg", NodeType.ARGUMENT, {
             "name": arg_name,
             "value": arg_value,
@@ -1061,7 +1129,7 @@ class ProductionRuleCatalog:
     def _remove_arg(self, p: dict) -> ProductionRule:
         callee = p["callee"]
         arg_name = p["arg_name"]
-        call_node = GraphNode("call", NodeType.CALL, {"callee": callee})
+        call_node = GraphNode("call", NodeType.CALL, self._call_attrs(callee, p))
         arg_node = GraphNode("arg", NodeType.ARGUMENT, {"name": arg_name})
         return _make_rule(
             name=f"remove_arg:{callee}.{arg_name}",
@@ -1077,11 +1145,12 @@ class ProductionRuleCatalog:
         callee = p["callee"]
         arg_name = p["arg_name"]
         new_value = p["new_value"]
-        lhs_call = GraphNode("call", NodeType.CALL, {"callee": callee})
+        call_attrs = self._call_attrs(callee, p)
+        lhs_call = GraphNode("call", NodeType.CALL, call_attrs)
         lhs_arg = GraphNode("arg", NodeType.ARGUMENT, {"name": arg_name})
-        k_call = GraphNode("call", NodeType.CALL, {"callee": callee})
+        k_call = GraphNode("call", NodeType.CALL, call_attrs)
         k_arg = GraphNode("arg", NodeType.ARGUMENT, {"name": arg_name})
-        rhs_call = GraphNode("call", NodeType.CALL, {"callee": callee})
+        rhs_call = GraphNode("call", NodeType.CALL, call_attrs)
         rhs_arg = GraphNode("arg", NodeType.ARGUMENT, {"name": arg_name, "value": new_value})
         return _make_rule(
             name=f"update_arg:{callee}.{arg_name}={new_value}",

@@ -568,7 +568,6 @@ class TestPlanCommand:
         data = json.loads(result.output)
 
         # Top-level structure
-        assert "description" in data
         assert "steps" in data
         assert "summary" in data
 
@@ -577,7 +576,6 @@ class TestPlanCommand:
         assert "step" in step
         assert "operator" in step
         assert "params" in step
-        assert "description" in step
         assert "edits" in step
         assert step["step"] == 1
         assert step["operator"] == "add_method"

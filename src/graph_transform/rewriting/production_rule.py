@@ -81,12 +81,15 @@ class ProductionRule:
 
     def deleted_edges(self) -> list:
         """Edges in L but not mapped from K."""
-        from graph_transform.core.typed_graph import GraphEdge
-
-        lhs_image = self.lhs_inclusion.image()
+        # Map K edges to L via the inclusion morphism
+        preserved = set()
+        for k_edge in self.interface.edges:
+            src = self.lhs_inclusion.node_map.get(k_edge.source, k_edge.source)
+            tgt = self.lhs_inclusion.node_map.get(k_edge.target, k_edge.target)
+            preserved.add((src, tgt, k_edge.edge_type))
         return [
             e for e in self.lhs.edges
-            if e.source not in lhs_image or e.target not in lhs_image
+            if (e.source, e.target, e.edge_type) not in preserved
         ]
 
     def created_nodes(self) -> set[str]:
@@ -96,10 +99,15 @@ class ProductionRule:
 
     def created_edges(self) -> list:
         """Edges in R but not mapped from K."""
-        rhs_image = self.rhs_inclusion.image()
+        # Map K edges to R via the inclusion morphism
+        preserved = set()
+        for k_edge in self.interface.edges:
+            src = self.rhs_inclusion.node_map.get(k_edge.source, k_edge.source)
+            tgt = self.rhs_inclusion.node_map.get(k_edge.target, k_edge.target)
+            preserved.add((src, tgt, k_edge.edge_type))
         return [
             e for e in self.rhs.edges
-            if e.source not in rhs_image or e.target not in rhs_image
+            if (e.source, e.target, e.edge_type) not in preserved
         ]
 
     def preserved_nodes(self) -> set[str]:

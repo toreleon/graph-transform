@@ -314,7 +314,7 @@ class _ASTGraphBuilder(ast.NodeVisitor):
                     "file": self.file,
                     "line": node.lineno,
                     "caller": caller,
-                    "is_method_call": isinstance(node.func, ast.Attribute),
+                    "call_type": "method" if isinstance(node.func, ast.Attribute) else "direct",
                 },
             ))
 

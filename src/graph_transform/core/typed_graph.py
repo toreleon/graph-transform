@@ -374,7 +374,7 @@ class TypedGraph:
                     "file": call.file,
                     "line": call.line,
                     "caller": call.caller,
-                    "is_method_call": call.is_method_call,
+                    "call_type": "method" if getattr(call, "is_method_call", False) else "direct",
                     "receiver": call.receiver,
                 },
             ))

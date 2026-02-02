@@ -22,7 +22,8 @@ from graph_transform.cli.commands.batch_cmd import (
 from graph_transform.cli.formatting import err_console, print_error, print_success
 from graph_transform.cli.operator_metadata import resolve_operator
 from graph_transform.core.typed_graph import EdgeType, NodeType, TypedGraph
-from graph_transform.engine.core import create_engine
+from graph_transform.engine.core import create_engine, verify_graph_invariants
+from graph_transform.rewriting.invariants import InvariantSeverity
 from graph_transform.io.builder import build_graph_from_files, build_graph_from_source
 from graph_transform.rewriting.graph_change import ChangeType, GraphChangeSet
 
@@ -237,22 +238,83 @@ def edits_from_changes(
                 },
             ))
 
-    # --- Attribute updates (renames, etc.) ---
+    # --- Attribute updates (renames, call target changes, import changes) ---
     for nc in changes.updated_nodes():
-        old_name = nc.old_attrs.get("name") if nc.old_attrs else None
+        if not nc.old_attrs:
+            continue
+        file, line = _extract_location(nc.host_node_id, nc.attrs)
+        resolved_file = nc.attrs.get("file") or file or "unknown"
+        resolved_line = nc.attrs.get("line") or line
+
+        # Import changes — handle before generic rename so IMPORT name
+        # changes (submodule pattern) produce update_import edits.
+        if nc.node_type == NodeType.IMPORT:
+            old_mod = nc.old_attrs.get("module", "")
+            new_mod = nc.attrs.get("module", "")
+            old_name = nc.old_attrs.get("name")
+            new_name = nc.attrs.get("name")
+
+            # Case 1: module path changed (from X.old import Y → from X.new import Y)
+            if old_mod and new_mod and old_mod != new_mod:
+                edits.append(EditInstruction(
+                    edit_type="update_import",
+                    file=resolved_file,
+                    line=resolved_line,
+                    details={
+                        "old_module": old_mod,
+                        "new_module": new_mod,
+                    },
+                ))
+                continue
+
+            # Case 2: imported name changed (from X import old → from X import new)
+            # This is the submodule import pattern.
+            if old_name and new_name and old_name != new_name:
+                old_full = f"{old_mod}.{old_name}" if old_mod else old_name
+                new_full = f"{new_mod}.{new_name}" if new_mod else new_name
+                edits.append(EditInstruction(
+                    edit_type="update_import",
+                    file=resolved_file,
+                    line=resolved_line,
+                    details={
+                        "old_module": old_full,
+                        "new_module": new_full,
+                    },
+                ))
+                continue
+
+            continue  # IMPORT node with no meaningful change
+
+        # Name changes → rename edit (FUNCTION, CLASS, FIELD, PARAMETER, etc.)
+        old_name = nc.old_attrs.get("name")
         new_name = nc.attrs.get("name")
         if old_name and new_name and old_name != new_name:
-            file, line = _extract_location(nc.host_node_id, nc.attrs)
             edits.append(EditInstruction(
                 edit_type="rename",
-                file=nc.attrs.get("file") or file or "unknown",
-                line=nc.attrs.get("line") or line,
+                file=resolved_file,
+                line=resolved_line,
                 details={
                     "old_name": old_name,
                     "new_name": new_name,
                     "node_type": nc.node_type.value,
                 },
             ))
+            continue
+
+        # Callee changes → update_call edit (CALL nodes)
+        old_callee = nc.old_attrs.get("callee")
+        new_callee = nc.attrs.get("callee")
+        if old_callee and new_callee and old_callee != new_callee:
+            edits.append(EditInstruction(
+                edit_type="update_call",
+                file=resolved_file,
+                line=resolved_line,
+                details={
+                    "old_callee": old_callee,
+                    "new_callee": new_callee,
+                },
+            ))
+            continue
 
     return edits
 
@@ -437,72 +499,129 @@ def plan(
             print_error(f"Step {i + 1}: {e}")
             sys.exit(1)
 
-        rule = engine.catalog.create_rule(op_type, step.params)
+        rules = engine.catalog.create_rules(op_type, step.params)
 
-        if step.repeat == "all":
-            results = engine.apply_all_matches(rule, current)
-            if not results:
-                print_error(f"Step {i + 1} ({step.operator}): No matches found")
-                sys.exit(1)
+        all_edits: list[EditInstruction] = []
+        total_applications = 0
+        all_results: list[Any] = []
+        any_graph_changes = False
 
-            all_edits: list[EditInstruction] = []
-            for r in results:
-                if not r.success:
-                    msg = r.errors[0] if r.errors else "Unknown error"
+        for rule in rules:
+            if step.repeat == "all":
+                results = engine.apply_all_matches(rule, current)
+                if not results:
+                    continue  # this sub-rule had no matches, try next
+
+                for r in results:
+                    if not r.success:
+                        msg = r.errors[0] if r.errors else "Unknown error"
+                        print_error(f"Step {i + 1} ({step.operator}): {msg}")
+                        sys.exit(1)
+                    if r.changes:
+                        all_edits.extend(
+                            edits_from_changes(r.changes, r.result_graph, rule.name, rule.parameters)
+                        )
+                        if r.changes.node_changes or r.changes.edge_changes:
+                            any_graph_changes = True
+                    current = r.result_graph
+                total_applications += len(results)
+                all_results.extend(results)
+            else:
+                result = engine.apply_rule(rule, current)
+                if not result.success:
+                    if len(rules) > 1:
+                        continue  # this sub-rule didn't match, try next
+                    msg = result.errors[0] if result.errors else "Unknown error"
                     print_error(f"Step {i + 1} ({step.operator}): {msg}")
                     sys.exit(1)
-                if r.changes:
-                    all_edits.extend(
-                        edits_from_changes(r.changes, r.result_graph, rule.name, rule.parameters)
+
+                if result.changes:
+                    step_edits = edits_from_changes(
+                        result.changes, result.result_graph, rule.name, rule.parameters
                     )
-                current = r.result_graph
+                    all_edits.extend(step_edits)
+                    if result.changes.node_changes or result.changes.edge_changes:
+                        any_graph_changes = True
+                current = result.result_graph
+                total_applications += 1
+                all_results.append(result)
 
-            step_results.append({
-                "step": i + 1,
-                "operator": step.operator,
-                "params": step.params,
-                "description": rule.description,
-                "applications": len(results),
-                "edits": [e.to_dict() for e in all_edits],
-            })
-        else:
-            result = engine.apply_rule(rule, current)
-            if not result.success:
-                msg = result.errors[0] if result.errors else "Unknown error"
-                print_error(f"Step {i + 1} ({step.operator}): {msg}")
-                sys.exit(1)
+        if total_applications == 0:
+            print_error(f"Step {i + 1} ({step.operator}): No matches found")
+            sys.exit(1)
 
-            step_edits: list[EditInstruction] = []
-            if result.changes:
-                step_edits = edits_from_changes(
-                    result.changes, result.result_graph, rule.name, rule.parameters
-                )
-            current = result.result_graph
+        step_result: dict[str, Any] = {
+            "step": i + 1,
+            "operator": step.operator,
+            "params": step.params,
+            "edits": [e.to_dict() for e in all_edits],
+        }
+        if step.repeat == "all":
+            step_result["applications"] = total_applications
+        step_results.append(step_result)
 
-            step_results.append({
-                "step": i + 1,
-                "operator": step.operator,
-                "params": step.params,
-                "description": rule.description,
-                "edits": [e.to_dict() for e in step_edits],
-            })
-
+        n_edits = len(step_result["edits"])
         if verbose:
-            n_edits = len(step_results[-1]["edits"])
             err_console.print(
                 f"  [dim]Step {i + 1}/{len(steps)}: {step.operator} -> {n_edits} edits[/dim]"
             )
+        if n_edits == 0:
+            if any_graph_changes:
+                print_error(
+                    f"Step {i + 1} ({step.operator}): Graph was modified but "
+                    f"produced 0 file edits — this operator is not yet supported "
+                    f"for edit generation"
+                )
+                sys.exit(1)
+            err_console.print(
+                f"  [yellow]Warning: Step {i + 1} ({step.operator}) "
+                f"produced 0 edits — verify operator targets exist in the graph[/yellow]"
+            )
 
-    # Phase 4: Output
+    # Phase 4: Post-pipeline invariant verification (differential)
+    # Only report violations INTRODUCED by the transformation, not pre-existing ones.
+    original_violations = verify_graph_invariants(graph)
+    original_keys = {(v.invariant_name, v.node_id, v.message) for v in original_violations}
+
+    final_violations = verify_graph_invariants(current)
+    new_violations = [
+        v for v in final_violations
+        if (v.invariant_name, v.node_id, v.message) not in original_keys
+    ]
+
+    new_errors = [v for v in new_violations if v.severity == InvariantSeverity.ERROR]
+    new_warnings = [v for v in new_violations if v.severity == InvariantSeverity.WARNING]
+
+    if verbose and new_violations:
+        for v in new_violations:
+            tag = "red" if v.severity == InvariantSeverity.ERROR else "yellow"
+            err_console.print(f"  [{tag}]{v.severity.value}: {v.message}[/{tag}]")
+            if v.fix_hint:
+                err_console.print(f"    [dim]Hint: {v.fix_hint}[/dim]")
+
+    if new_errors:
+        err_console.print(
+            f"\n[red bold]Plan verification failed: "
+            f"{len(new_errors)} new error(s) introduced by this transformation[/red bold]"
+        )
+        for v in new_errors:
+            err_console.print(f"  [red]- {v.invariant_name}: {v.message}[/red]")
+            if v.fix_hint:
+                err_console.print(f"    [dim]Hint: {v.fix_hint}[/dim]")
+        sys.exit(1)
+
+    # Phase 5: Output
     total_edits = sum(len(s["edits"]) for s in step_results)
-    output_data = {
-        "description": "Refactoring edit plan",
+    output_data: dict[str, Any] = {
         "steps": step_results,
         "summary": {
             "total_steps": len(step_results),
             "total_edits": total_edits,
         },
     }
+
+    if new_warnings:
+        output_data["warnings"] = [v.to_dict() for v in new_warnings]
 
     json_output = json.dumps(output_data, indent=2)
 

@@ -904,6 +904,104 @@ class TestGraphTransformationEngine:
         assert len(results) == 2
         assert all(r.success for r in results)
 
+    def test_add_arg_call_type_direct(self):
+        """call_type='direct' should only match direct calls, not method calls."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        graph.add_node(GraphNode("c1", NodeType.CALL, {"callee": "foo", "call_type": "direct"}))
+        graph.add_node(GraphNode("c2", NodeType.CALL, {"callee": "foo", "call_type": "method"}))
+
+        rule = engine.catalog.create_rule(OperatorType.ADD_ARG, {
+            "callee": "foo", "arg_name": "log", "arg_value": "True",
+            "call_type": "direct",
+        })
+        results = engine.apply_all_matches(rule, graph)
+
+        assert len(results) == 1
+        assert results[0].success
+
+    def test_add_arg_call_type_method(self):
+        """call_type='method' should only match method calls, not direct calls."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        graph.add_node(GraphNode("c1", NodeType.CALL, {"callee": "foo", "call_type": "direct"}))
+        graph.add_node(GraphNode("c2", NodeType.CALL, {"callee": "foo", "call_type": "method"}))
+
+        rule = engine.catalog.create_rule(OperatorType.ADD_ARG, {
+            "callee": "foo", "arg_name": "log", "arg_value": "True",
+            "call_type": "method",
+        })
+        results = engine.apply_all_matches(rule, graph)
+
+        assert len(results) == 1
+        assert results[0].success
+
+    def test_add_arg_no_call_type_matches_both(self):
+        """Without call_type, add_arg should match both direct and method calls."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        graph.add_node(GraphNode("c1", NodeType.CALL, {"callee": "foo", "call_type": "direct"}))
+        graph.add_node(GraphNode("c2", NodeType.CALL, {"callee": "foo", "call_type": "method"}))
+
+        rule = engine.catalog.create_rule(OperatorType.ADD_ARG, {
+            "callee": "foo", "arg_name": "log", "arg_value": "True",
+        })
+        results = engine.apply_all_matches(rule, graph)
+
+        assert len(results) == 2
+        assert all(r.success for r in results)
+
+    def test_update_call_call_type_direct(self):
+        """call_type='direct' on update_call should only match direct calls."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        graph.add_node(GraphNode("c1", NodeType.CALL, {"callee": "old", "call_type": "direct"}))
+        graph.add_node(GraphNode("c2", NodeType.CALL, {"callee": "old", "call_type": "method"}))
+
+        rule = engine.catalog.create_rule(OperatorType.UPDATE_CALL, {
+            "old_callee": "old", "new_callee": "new",
+            "call_type": "direct",
+        })
+        results = engine.apply_all_matches(rule, graph)
+
+        assert len(results) == 1
+        assert results[0].success
+
+    def test_update_import_submodule_pattern(self):
+        """update_import should also match 'from parent import child' pattern."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        # Pattern 1: from pkg.old_mod import Foo  (module="pkg.old_mod", name="Foo")
+        graph.add_node(GraphNode("i1", NodeType.IMPORT, {
+            "module": "pkg.old_mod", "name": "Foo",
+        }))
+        # Pattern 2: from pkg import old_mod  (module="pkg", name="old_mod")
+        graph.add_node(GraphNode("i2", NodeType.IMPORT, {
+            "module": "pkg", "name": "old_mod",
+        }))
+
+        rules = engine.catalog.create_rules(OperatorType.UPDATE_IMPORT, {
+            "old_module": "pkg.old_mod", "new_module": "pkg.new_mod",
+        })
+        assert len(rules) == 2  # direct + submodule rules
+
+        current = graph
+        for rule in rules:
+            results = engine.apply_all_matches(rule, current)
+            for r in results:
+                assert r.success
+                current = r.result_graph
+
+        # i1: module changed from pkg.old_mod to pkg.new_mod
+        i1 = current.get_node("i1")
+        assert i1.attrs["module"] == "pkg.new_mod"
+        assert i1.attrs["name"] == "Foo"  # unchanged
+
+        # i2: name changed from old_mod to new_mod
+        i2 = current.get_node("i2")
+        assert i2.attrs["module"] == "pkg"  # unchanged
+        assert i2.attrs["name"] == "new_mod"
+
     def test_apply_path(self):
         """Apply a sequence of rules as a transformation path."""
         engine = create_engine(check_invariants=False)

@@ -717,11 +717,11 @@ class TestQualityHints:
 class TestInvariantRegistry:
     def test_enable_disable_by_name(self):
         r = InvariantRegistry()
-        assert r.get_invariant("schema_conformance").enabled is False
-        r.enable("schema_conformance")
-        assert r.get_invariant("schema_conformance").enabled is True
-        r.disable("schema_conformance")
-        assert r.get_invariant("schema_conformance").enabled is False
+        assert r.get_invariant("no_orphan_nodes").enabled is False
+        r.enable("no_orphan_nodes")
+        assert r.get_invariant("no_orphan_nodes").enabled is True
+        r.disable("no_orphan_nodes")
+        assert r.get_invariant("no_orphan_nodes").enabled is False
 
     def test_enable_disable_by_layer(self):
         r = InvariantRegistry()
@@ -741,8 +741,8 @@ class TestInvariantRegistry:
         r = InvariantRegistry()
         enabled = r.get_enabled()
         assert all(inv.enabled for inv in enabled)
-        # Schema conformance is disabled by default
-        assert not any(inv.name == "schema_conformance" for inv in enabled)
+        # Schema conformance is now enabled by default
+        assert any(inv.name == "schema_conformance" for inv in enabled)
 
     def test_verify_graph_layer_filter(self):
         """Only check specified layers."""

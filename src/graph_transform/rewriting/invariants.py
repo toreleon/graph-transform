@@ -256,7 +256,8 @@ class GraphSchema:
                 ))
                 continue
 
-            # Dangling target
+            # Dangling target — WARNING (not error) because partial graphs
+            # (subgraph scoping) naturally have edges to external nodes.
             if tgt_node is None:
                 if constraint and constraint.allow_external_target:
                     continue  # e.g. INHERITS to stdlib class
@@ -266,9 +267,10 @@ class GraphSchema:
                         f"Dangling edge target: {edge.source} -> {edge.target} "
                         f"(type={edge.edge_type.value})"
                     ),
+                    severity=InvariantSeverity.WARNING,
                     layer=InvariantLayer.SCHEMA,
                     edge=edge,
-                    fix_hint="Add the missing target node or remove the edge",
+                    fix_hint="Target node missing — may be in a file not included in the graph",
                 ))
                 continue
 
@@ -708,6 +710,87 @@ def _check_reference_consistency(graph: TypedGraph) -> list[InvariantViolation]:
     return violations
 
 
+def _check_import_target_resolution(graph: TypedGraph) -> list[InvariantViolation]:
+    """From-imports should resolve to definitions in the source graph.
+
+    For each ``from X import Y`` node whose source module is present in the
+    graph, verify that a FUNCTION or CLASS named ``Y`` is actually defined in
+    that module.  If the module is **not** in the graph we skip (external dep).
+
+    This catches stale imports left behind after a ``rename_func`` or
+    ``rename_class`` that was not paired with an ``update_import`` step.
+    """
+    violations: list[InvariantViolation] = []
+
+    # 1. Build MODULE file-suffix → module_id mapping
+    module_by_suffix: dict[str, str] = {}  # "a/b/utils.py" -> "module:utils"
+    for mod_node in graph.get_nodes_by_type(NodeType.MODULE):
+        fpath = mod_node.attrs.get("file", "")
+        if fpath:
+            module_by_suffix[fpath] = mod_node.id
+
+    # 2. Build module_id → {defined names}
+    defs_by_module: dict[str, set[str]] = {mid: set() for mid in module_by_suffix.values()}
+    for node in (*graph.get_nodes_by_type(NodeType.FUNCTION),
+                 *graph.get_nodes_by_type(NodeType.CLASS)):
+        for edge in graph.get_edges_from(node.id):
+            if edge.edge_type == EdgeType.DEFINED_IN:
+                mod_id = edge.target
+                name = node.attrs.get("name", "")
+                if mod_id in defs_by_module and name:
+                    defs_by_module[mod_id].add(name)
+
+    # 3. For each from-import, resolve target module and check name
+    for imp_node in graph.get_nodes_by_type(NodeType.IMPORT):
+        if not imp_node.attrs.get("is_from_import", False):
+            continue
+        imported_name = imp_node.attrs.get("name")
+        if not imported_name:
+            continue
+        imp_module = imp_node.attrs.get("module", "")
+        if not imp_module:
+            continue
+
+        # Convert dotted module to path suffix: "a.b.utils" → "a/b/utils.py"
+        mod_path = imp_module.replace(".", "/") + ".py"
+        # Also try package __init__: "a.b.utils" → "a/b/utils/__init__.py"
+        pkg_path = imp_module.replace(".", "/") + "/__init__.py"
+
+        matched_mod_id: str | None = None
+        for suffix, mid in module_by_suffix.items():
+            if suffix == mod_path or suffix.endswith("/" + mod_path):
+                matched_mod_id = mid
+                break
+            if suffix == pkg_path or suffix.endswith("/" + pkg_path):
+                matched_mod_id = mid
+                break
+
+        if matched_mod_id is None:
+            continue  # Source module not in graph — external, skip
+
+        defined_names = defs_by_module.get(matched_mod_id, set())
+        if imported_name not in defined_names:
+            available = sorted(defined_names) if defined_names else ["(none)"]
+            violations.append(InvariantViolation(
+                invariant_name="import_target_resolution",
+                message=(
+                    f"Import '{imported_name}' from '{imp_module}' does not "
+                    f"match any function/class definition in '{matched_mod_id}'"
+                ),
+                severity=InvariantSeverity.ERROR,
+                layer=InvariantLayer.REFERENCE,
+                node_id=imp_node.id,
+                fix_hint=(
+                    f"Add an update_import operator to rename "
+                    f"'{imported_name}', or the import may refer to a "
+                    f"variable/re-export not captured in the graph. "
+                    f"Definitions found: {available}"
+                ),
+            ))
+
+    return violations
+
+
 # =============================================================================
 # Layer 4 — Type System
 # =============================================================================
@@ -1069,7 +1152,6 @@ class InvariantRegistry:
                 description="Type graph conformance (edge types, multiplicity, required attrs)",
                 check=_check_schema_conformance,
                 layer=InvariantLayer.SCHEMA,
-                enabled=False,
             ),
             # Layer 1: Structure
             Invariant(
@@ -1111,6 +1193,12 @@ class InvariantRegistry:
                 description="Reference attributes match their targets",
                 check=_check_reference_consistency,
                 severity=InvariantSeverity.WARNING,
+                layer=InvariantLayer.REFERENCE,
+            ),
+            Invariant(
+                name="import_target_resolution",
+                description="From-imports resolve to definitions in the source graph",
+                check=_check_import_target_resolution,
                 layer=InvariantLayer.REFERENCE,
             ),
             # Layer 4: Type System
