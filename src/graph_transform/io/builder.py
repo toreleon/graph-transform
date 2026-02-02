@@ -379,7 +379,7 @@ class _ASTGraphBuilder(ast.NodeVisitor):
             ))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        module = node.module or ""
+        module = "." * node.level + (node.module or "") if node.level else (node.module or "")
         for alias in (node.names or []):
             imp_name = alias.asname or alias.name
             imp_id = f"import:{self.file}:{imp_name}"

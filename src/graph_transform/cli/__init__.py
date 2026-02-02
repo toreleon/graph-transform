@@ -14,6 +14,7 @@ from .commands.build_cmd import build
 from .commands.dry_run_cmd import dry_run
 from .commands.list_cmd import list_operators
 from .commands.plan_cmd import plan
+from .commands.spec_cmd import spec
 from .commands.verify_cmd import verify_graph
 from .commands.visualize_cmd import visualize
 
@@ -46,6 +47,7 @@ cli.add_command(verify_graph, name="verify")
 cli.add_command(dry_run, name="dry-run")
 cli.add_command(visualize, name="visualize")
 cli.add_command(build, name="build")
+cli.add_command(spec, name="spec")
 
 
 def main() -> None:

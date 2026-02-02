@@ -1002,6 +1002,104 @@ class TestGraphTransformationEngine:
         assert i2.attrs["module"] == "pkg"  # unchanged
         assert i2.attrs["name"] == "new_mod"
 
+    def test_update_import_relative_direct(self):
+        """update_import handles relative imports like 'from .exceptions import X'."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        # from .exceptions import FileModeWarning  (module=".exceptions", name="FileModeWarning")
+        graph.add_node(GraphNode("i1", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "FileModeWarning",
+        }))
+        # from .exceptions import RequestsDependencyWarning
+        graph.add_node(GraphNode("i2", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "RequestsDependencyWarning",
+        }))
+        # Unrelated absolute import — should not be affected
+        graph.add_node(GraphNode("i3", NodeType.IMPORT, {
+            "module": "urllib3.exceptions", "name": "HTTPError",
+        }))
+
+        rules = engine.catalog.create_rules(OperatorType.UPDATE_IMPORT, {
+            "old_module": ".exceptions", "new_module": ".warnings",
+        })
+        assert len(rules) == 2  # direct + submodule
+
+        current = graph
+        for rule in rules:
+            results = engine.apply_all_matches(rule, current)
+            for r in results:
+                assert r.success
+                current = r.result_graph
+
+        i1 = current.get_node("i1")
+        assert i1.attrs["module"] == ".warnings"
+        assert i1.attrs["name"] == "FileModeWarning"
+
+        i2 = current.get_node("i2")
+        assert i2.attrs["module"] == ".warnings"
+        assert i2.attrs["name"] == "RequestsDependencyWarning"
+
+        # Absolute import unchanged
+        i3 = current.get_node("i3")
+        assert i3.attrs["module"] == "urllib3.exceptions"
+
+    def test_update_import_relative_submodule(self):
+        """update_import handles 'from . import exceptions' pattern."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        # from . import exceptions  (module=".", name="exceptions")
+        graph.add_node(GraphNode("i1", NodeType.IMPORT, {
+            "module": ".", "name": "exceptions",
+        }))
+
+        rules = engine.catalog.create_rules(OperatorType.UPDATE_IMPORT, {
+            "old_module": ".exceptions", "new_module": ".warnings",
+        })
+
+        current = graph
+        for rule in rules:
+            results = engine.apply_all_matches(rule, current)
+            for r in results:
+                assert r.success
+                current = r.result_graph
+
+        # Submodule rule should change name from "exceptions" to "warnings"
+        i1 = current.get_node("i1")
+        assert i1.attrs["module"] == "."
+        assert i1.attrs["name"] == "warnings"
+
+    def test_update_import_relative_nested(self):
+        """update_import handles nested relative imports like 'from ..pkg.mod import X'."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        # from ..pkg.old_mod import Foo
+        graph.add_node(GraphNode("i1", NodeType.IMPORT, {
+            "module": "..pkg.old_mod", "name": "Foo",
+        }))
+        # from ..pkg import old_mod
+        graph.add_node(GraphNode("i2", NodeType.IMPORT, {
+            "module": "..pkg", "name": "old_mod",
+        }))
+
+        rules = engine.catalog.create_rules(OperatorType.UPDATE_IMPORT, {
+            "old_module": "..pkg.old_mod", "new_module": "..pkg.new_mod",
+        })
+        assert len(rules) == 2
+
+        current = graph
+        for rule in rules:
+            results = engine.apply_all_matches(rule, current)
+            for r in results:
+                assert r.success
+                current = r.result_graph
+
+        i1 = current.get_node("i1")
+        assert i1.attrs["module"] == "..pkg.new_mod"
+
+        i2 = current.get_node("i2")
+        assert i2.attrs["module"] == "..pkg"
+        assert i2.attrs["name"] == "new_mod"
+
     def test_apply_path(self):
         """Apply a sequence of rules as a transformation path."""
         engine = create_engine(check_invariants=False)

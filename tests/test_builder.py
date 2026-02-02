@@ -146,6 +146,40 @@ class TestBuildFromFile:
             i.attrs.get("module") == "os" for i in imports
         )
 
+    def test_relative_imports(self, tmp_path):
+        """Relative imports preserve leading dots in the module attribute."""
+        # Create a package structure so relative imports are valid syntax
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "exceptions.py").write_text("class Err: pass\n")
+        src = pkg / "main.py"
+        src.write_text(textwrap.dedent("""\
+            from .exceptions import Err
+            from . import exceptions
+            from ..utils import helper
+        """))
+        graph = build_graph_from_source(src)
+
+        imports = graph.get_nodes_by_type(NodeType.IMPORT)
+        import_map = {n.id: n for n in imports}
+
+        # from .exceptions import Err → module=".exceptions", name="Err"
+        err_nodes = [n for n in imports if n.attrs.get("name") == "Err"]
+        assert len(err_nodes) == 1
+        assert err_nodes[0].attrs["module"] == ".exceptions"
+        assert err_nodes[0].attrs["is_from_import"] is True
+
+        # from . import exceptions → module=".", name="exceptions"
+        exc_nodes = [n for n in imports if n.attrs.get("name") == "exceptions"]
+        assert len(exc_nodes) == 1
+        assert exc_nodes[0].attrs["module"] == "."
+
+        # from ..utils import helper → module="..utils", name="helper"
+        helper_nodes = [n for n in imports if n.attrs.get("name") == "helper"]
+        assert len(helper_nodes) == 1
+        assert helper_nodes[0].attrs["module"] == "..utils"
+
     def test_call_sites(self, tmp_path):
         src = _write_source(tmp_path, "calls.py", """\
             def greet(name):

@@ -79,7 +79,7 @@ class PushoutEngine:
             result_graph = self._apply_spo(rule, match, host, changes)
 
         # Apply attribute transfer
-        self._apply_attr_transfer(result_graph, rule, match, host)
+        self._apply_attr_transfer(result_graph, rule, match, host, changes)
 
         return RewriteResult(
             success=True,
@@ -456,19 +456,32 @@ class PushoutEngine:
         rule: ProductionRule,
         match: GraphMorphism,
         host: TypedGraph,
+        changes: GraphChangeSet | None = None,
     ) -> None:
         """Apply attribute transfer functions to created/updated nodes."""
         created = rule.created_nodes()
+
+        # Build lookup from RHS node ID → host node ID using change records
+        created_id_map: dict[str, str] = {}
+        if changes:
+            for nc in changes.node_changes:
+                if nc.change_type == ChangeType.ADD_NODE and nc.host_node_id:
+                    created_id_map[nc.node_id] = nc.host_node_id
 
         for rhs_node_id, transfer_fn in rule.attr_transfer.items():
             # Find the result node ID
             rhs_inverse = rule.rhs_inclusion.inverse_map()
             if rhs_node_id in created:
-                # Created node: find by matching in result
+                # Created node: use change records for exact ID when available
+                host_node_id = created_id_map.get(rhs_node_id)
+                if host_node_id and host_node_id in result.nodes:
+                    computed_attrs = transfer_fn(match, host)
+                    result.nodes[host_node_id].attrs.update(computed_attrs)
+                    continue
+                # Fallback: find by matching in result
                 rhs_node = rule.rhs.nodes.get(rhs_node_id)
                 if not rhs_node:
                     continue
-                # Look for the node in result by matching attrs
                 for result_id, result_node in result.nodes.items():
                     if (
                         result_node.node_type == rhs_node.node_type

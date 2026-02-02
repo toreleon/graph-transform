@@ -829,6 +829,17 @@ class ProductionRuleCatalog:
             "default_value": p.get("default_value"),
             "is_keyword_only": p.get("keyword_only", True),
         })
+
+        def _compute_param_position(match: GraphMorphism, host: TypedGraph) -> dict:
+            host_func_id = match.map_node("func")
+            if not host_func_id:
+                return {"position": 0}
+            existing = [
+                e for e in host.edges
+                if e.source == host_func_id and e.edge_type == EdgeType.HAS_PARAMETER
+            ]
+            return {"position": len(existing)}
+
         return _make_rule(
             name=f"add_param:{func_name}.{param_name}",
             op_type=OperatorType.ADD_PARAM,
@@ -838,6 +849,7 @@ class ProductionRuleCatalog:
             rhs_edges=[GraphEdge("func", "param", EdgeType.HAS_PARAMETER)],
             preconditions=[_node_exists_precondition(NodeType.FUNCTION, "name", func_name, "func_exists")],
             postconditions=[_node_exists_postcondition(NodeType.PARAMETER, "name", param_name, "param_added")],
+            attr_transfer={"param": _compute_param_position},
             parameters=p, description=f"Add parameter {param_name} to {func_name}", category="parameter",
         )
 
@@ -881,6 +893,17 @@ class ProductionRuleCatalog:
         obj_name = p["object_name"]
         func_node = GraphNode("func", NodeType.FUNCTION, {"name": func_name})
         obj_param = GraphNode("obj", NodeType.PARAMETER, {"name": obj_name})
+
+        def _compute_param_position(match: GraphMorphism, host: TypedGraph) -> dict:
+            host_func_id = match.map_node("func")
+            if not host_func_id:
+                return {"position": 0}
+            existing = [
+                e for e in host.edges
+                if e.source == host_func_id and e.edge_type == EdgeType.HAS_PARAMETER
+            ]
+            return {"position": len(existing)}
+
         return _make_rule(
             name=f"introduce_param_object:{func_name}.{obj_name}",
             op_type=OperatorType.INTRODUCE_PARAM_OBJECT,
@@ -889,6 +912,7 @@ class ProductionRuleCatalog:
             rhs_nodes=[func_node, obj_param],
             rhs_edges=[GraphEdge("func", "obj", EdgeType.HAS_PARAMETER)],
             preconditions=[_node_exists_precondition(NodeType.FUNCTION, "name", func_name, "func_exists")],
+            attr_transfer={"obj": _compute_param_position},
             parameters=p, description=f"Introduce param object {obj_name} in {func_name}", category="parameter",
         )
 
@@ -1011,12 +1035,42 @@ class ProductionRuleCatalog:
             parameters=p, description=f"Remove import {mod}.{name}", category="reference",
         )
 
+    @staticmethod
+    def _split_module_path(module: str) -> tuple[str, str] | None:
+        """Split a module path into (parent, child) for submodule matching.
+
+        Handles relative imports where leading dots are part of the parent:
+          ".exceptions"      → (".", "exceptions")
+          "..pkg.mod"        → ("..pkg", "mod")
+          "pkg.mod"          → ("pkg", "mod")
+          "os"               → None  (no split possible)
+          "."                → None  (no child component)
+        """
+        # Separate leading dots (relative import markers) from the rest
+        i = 0
+        while i < len(module) and module[i] == ".":
+            i += 1
+        dots = module[:i]
+        rest = module[i:]
+
+        if "." in rest:
+            # "pkg.mod" portion can be split normally
+            parent, child = rest.rsplit(".", 1)
+            return (dots + parent, child)
+        elif dots and rest:
+            # Relative import: ".exceptions" → (".", "exceptions")
+            return (dots, rest)
+        else:
+            # Can't split: bare "os" or just "."
+            return None
+
     def _update_import(self, p: dict) -> ProductionRule | list[ProductionRule]:
         old_module = p["old_module"]
         new_module = p["new_module"]
 
         # Rule 1: Match `from old_module import X` pattern
         # e.g., from ansible.module_utils.facts.namespace import PrefixFactNamespace
+        # e.g., from .exceptions import FileModeWarning  (relative)
         lhs_node = GraphNode("imp", NodeType.IMPORT, {"module": old_module})
         k_node = GraphNode("imp", NodeType.IMPORT, {})
         rhs_node = GraphNode("imp", NodeType.IMPORT, {"module": new_module})
@@ -1035,10 +1089,12 @@ class ProductionRuleCatalog:
 
         # Rule 2: Match `from parent import submodule` pattern
         # e.g., from ansible.module_utils.facts import namespace
-        # Here the IMPORT node has module=parent and name=child
-        if "." in old_module and "." in new_module:
-            old_parent, old_child = old_module.rsplit(".", 1)
-            new_parent, new_child = new_module.rsplit(".", 1)
+        # e.g., from . import exceptions  (relative)
+        old_split = self._split_module_path(old_module)
+        new_split = self._split_module_path(new_module)
+        if old_split and new_split:
+            old_parent, old_child = old_split
+            new_parent, new_child = new_split
 
             lhs_sub = GraphNode("imp", NodeType.IMPORT, {
                 "module": old_parent, "name": old_child,
@@ -1116,6 +1172,17 @@ class ProductionRuleCatalog:
             "value": arg_value,
             "is_keyword": p.get("is_keyword", True),
         })
+
+        def _compute_arg_position(match: GraphMorphism, host: TypedGraph) -> dict:
+            host_call_id = match.map_node("call")
+            if not host_call_id:
+                return {"position": 0}
+            existing = [
+                e for e in host.edges
+                if e.source == host_call_id and e.edge_type == EdgeType.HAS_ARGUMENT
+            ]
+            return {"position": len(existing)}
+
         return _make_rule(
             name=f"add_arg:{callee}.{arg_name}",
             op_type=OperatorType.ADD_ARG,
@@ -1123,6 +1190,7 @@ class ProductionRuleCatalog:
             interface_nodes=[call_node], interface_edges=[],
             rhs_nodes=[call_node, arg_node],
             rhs_edges=[GraphEdge("call", "arg", EdgeType.HAS_ARGUMENT)],
+            attr_transfer={"arg": _compute_arg_position},
             parameters=p, description=f"Add argument {arg_name} to calls of {callee}", category="call_site",
         )
 
