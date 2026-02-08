@@ -22,14 +22,29 @@ from typing import Any
 class NodeType(Enum):
     """Types of nodes in the code graph."""
 
+    # Definitions
     FUNCTION = "function"
     CLASS = "class"
     FIELD = "field"
     PARAMETER = "parameter"
+    MODULE = "module"
+
+    # References
+    IMPORT = "import"
     CALL = "call"
     ARGUMENT = "argument"
-    IMPORT = "import"
-    MODULE = "module"
+
+    # Control flow (added for primitives)
+    BLOCK = "block"
+    BRANCH = "branch"
+    LOOP = "loop"
+
+    # Expressions (added for primitives)
+    EXPRESSION = "expression"
+    LITERAL = "literal"
+
+    # Annotations (added for primitives)
+    ANNOTATION = "annotation"
 
 
 class EdgeType(Enum):

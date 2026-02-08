@@ -220,6 +220,15 @@ class GraphSchema:
         NodeType.IMPORT: ["module"],
         NodeType.MODULE: ["name"],
         NodeType.FIELD: ["name"],
+        # Control flow nodes (added for primitives)
+        NodeType.BLOCK: [],
+        NodeType.BRANCH: [],
+        NodeType.LOOP: [],
+        # Expression nodes (added for primitives)
+        NodeType.EXPRESSION: [],
+        NodeType.LITERAL: [],
+        # Annotation nodes (added for primitives)
+        NodeType.ANNOTATION: [],
     }
 
     def validate(self, graph: TypedGraph) -> list[InvariantViolation]:
