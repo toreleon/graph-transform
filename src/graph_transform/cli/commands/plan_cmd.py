@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import click
@@ -133,36 +134,88 @@ def edits_from_changes(
             parent = _find_parent_from_edges(
                 nc.host_node_id or "", added_edges, EdgeType.HAS_PARAMETER, result_graph
             )
+            func_name = parent.get("name") or parameters.get("function_name", "unknown")
+            param_name = nc.attrs.get("name")
+            default_val = nc.attrs.get("default_value")
+            has_default = nc.attrs.get("has_default", False)
+            param_file = parent.get("file") or file or "unknown"
+            param_line = parent.get("line") or line
+
+            # Build parameter string for sed
+            if has_default and default_val is not None:
+                param_str = f"{param_name}={default_val}"
+            else:
+                param_str = str(param_name)
+
+            details: dict[str, Any] = {
+                "function": func_name,
+                "parameter": {
+                    "name": param_name,
+                    "default": default_val,
+                    "has_default": has_default,
+                },
+            }
+            # Generate sed command for single-line function defs:
+            # Pattern 1: def func() → def func(param=default) (empty params)
+            # Pattern 2: def func(...) → def func(..., param=default) (existing params)
+            if param_line and param_name and func_name != "unknown":
+                details["command"] = (
+                    f"sed -i "
+                    f"'{param_line}s/\\(def {func_name}\\)()/\\1({param_str})/; "
+                    f"t; "
+                    f"{param_line}s/\\(def {func_name}(.*\\))/\\1, {param_str})/' "
+                    f"{param_file}"
+                )
+
             edits.append(EditInstruction(
                 edit_type="add_parameter",
-                file=parent.get("file") or file or "unknown",
-                line=parent.get("line") or line,
-                details={
-                    "function": parent.get("name") or parameters.get("function_name", "unknown"),
-                    "parameter": {
-                        "name": nc.attrs.get("name"),
-                        "default": nc.attrs.get("default_value"),
-                        "has_default": nc.attrs.get("has_default", False),
-                    },
-                },
+                file=param_file,
+                line=param_line,
+                details=details,
             ))
 
         elif nc.node_type == NodeType.ARGUMENT:
             parent = _find_parent_from_edges(
                 nc.host_node_id or "", added_edges, EdgeType.HAS_ARGUMENT, result_graph
             )
+            callee = parent.get("name") or parameters.get("callee", "unknown")
+            arg_name = nc.attrs.get("name")
+            arg_value = nc.attrs.get("value")
+            is_keyword = nc.attrs.get("is_keyword", True)
+            arg_file = parent.get("file") or file or "unknown"
+            arg_line = parent.get("line") or line
+
+            # Build argument string for sed
+            if is_keyword and arg_name:
+                arg_str = f"{arg_name}={arg_value}"
+            else:
+                arg_str = str(arg_value) if arg_value is not None else str(arg_name)
+
+            details = {
+                "call": callee,
+                "argument": {
+                    "name": arg_name,
+                    "value": arg_value,
+                    "is_keyword": is_keyword,
+                },
+            }
+            # Generate sed command for single-line calls:
+            # Pattern 1: callee() → callee(arg) (empty args)
+            # Pattern 2: callee(...) → callee(..., arg) (existing args)
+            if arg_line and callee != "unknown":
+                details["command"] = (
+                    f"sed -i "
+                    f"'{arg_line}s/\\(\\<{callee}\\>\\)()/\\1({arg_str})/; "
+                    f"t; "
+                    f"{arg_line}s/\\(\\<{callee}\\>(.*\\))/\\1, {arg_str})/' "
+                    f"{arg_file}"
+                )
+
             edits.append(EditInstruction(
                 edit_type="add_argument",
-                file=parent.get("file") or file or "unknown",
-                line=parent.get("line") or line,
-                details={
-                    "call": parent.get("name") or parameters.get("callee", "unknown"),
-                    "argument": {
-                        "name": nc.attrs.get("name"),
-                        "value": nc.attrs.get("value"),
-                        "is_keyword": nc.attrs.get("is_keyword", True),
-                    },
-                },
+                file=arg_file,
+                line=arg_line,
+                details=details,
             ))
 
         elif nc.node_type == NodeType.FUNCTION:
@@ -256,15 +309,71 @@ def edits_from_changes(
 
             # Case 1: module path changed (from X.old import Y → from X.new import Y)
             if old_mod and new_mod and old_mod != new_mod:
-                edits.append(EditInstruction(
-                    edit_type="update_import",
-                    file=resolved_file,
-                    line=resolved_line,
-                    details={
-                        "old_module": old_mod,
-                        "new_module": new_mod,
-                    },
-                ))
+                # Selective move (names filter): generate split edits so the
+                # agent removes just this name from the old import block and
+                # adds a new import statement instead of changing the module
+                # on the entire import line.
+                names_filter = parameters.get("names")
+                import_name = nc.attrs.get("name")
+                if names_filter and import_name:
+                    # Escape dots for sed regex patterns
+                    escaped_old = old_mod.replace(".", "\\.")
+                    # Remove NAME from old import line:
+                    #  1. Sole import: `from MOD import NAME` → delete line
+                    #  2. First in list: `from MOD import NAME, REST` → keep REST
+                    #  3. Middle/last: `from MOD import REST, NAME` → keep REST
+                    #  4. Multi-line block: line containing only `NAME,` → delete
+                    edits.append(EditInstruction(
+                        edit_type="remove_from_import",
+                        file=resolved_file,
+                        line=resolved_line,
+                        details={
+                            "module": old_mod,
+                            "name": import_name,
+                            "command": (
+                                f"sed -i "
+                                f"'/^[[:space:]]*from {escaped_old} import {import_name}[[:space:]]*$/d; "
+                                f"s/\\(from {escaped_old} import \\){import_name}, /\\1/; "
+                                f"s/, {import_name}\\b//; "
+                                f"/^[[:space:]]*{import_name}[[:space:]]*,\\?[[:space:]]*$/d' "
+                                f"{resolved_file}"
+                            ),
+                        },
+                    ))
+                    # Add new import, preserving indentation of the old import.
+                    # Uses h;s;p;x to: save line → replace with new import
+                    # (keeping leading whitespace) → print → restore original.
+                    edits.append(EditInstruction(
+                        edit_type="add_import",
+                        file=resolved_file,
+                        line=resolved_line,
+                        details={
+                            "module": new_mod,
+                            "name": import_name,
+                            "command": (
+                                f"sed -i "
+                                f"'/^[[:space:]]*from {escaped_old} import/"
+                                f"{{h;s/^\\([[:space:]]*\\)from .*/\\1from {new_mod} import {import_name}/;"
+                                f"p;x;}}' "
+                                f"{resolved_file}"
+                            ),
+                        },
+                    ))
+                else:
+                    escaped_old = old_mod.replace(".", "\\.")
+                    edits.append(EditInstruction(
+                        edit_type="update_import",
+                        file=resolved_file,
+                        line=resolved_line,
+                        details={
+                            "old_module": old_mod,
+                            "new_module": new_mod,
+                            "command": (
+                                f"sed -i 's/from {escaped_old} import/"
+                                f"from {new_mod} import/g' {resolved_file}"
+                            ),
+                        },
+                    ))
                 continue
 
             # Case 2: imported name changed (from X import old → from X import new)
@@ -279,6 +388,12 @@ def edits_from_changes(
                     details={
                         "old_module": old_full,
                         "new_module": new_full,
+                        "command": (
+                            f"sed -i "
+                            f"'s/import \\<{old_name}\\>/import {new_name}/g; "
+                            f"s/\\<{old_name}\\>\\./{new_name}./g' "
+                            f"{resolved_file}"
+                        ),
                     },
                 ))
                 continue
@@ -289,15 +404,22 @@ def edits_from_changes(
         old_name = nc.old_attrs.get("name")
         new_name = nc.attrs.get("name")
         if old_name and new_name and old_name != new_name:
+            details: dict[str, Any] = {
+                "old_name": old_name,
+                "new_name": new_name,
+                "node_type": nc.node_type.value,
+            }
+            if resolved_line and resolved_file != "unknown":
+                details["command"] = (
+                    f"sed -i "
+                    f"'{resolved_line}s/\\<{old_name}\\>/{new_name}/g' "
+                    f"{resolved_file}"
+                )
             edits.append(EditInstruction(
                 edit_type="rename",
                 file=resolved_file,
                 line=resolved_line,
-                details={
-                    "old_name": old_name,
-                    "new_name": new_name,
-                    "node_type": nc.node_type.value,
-                },
+                details=details,
             ))
             continue
 
@@ -305,16 +427,81 @@ def edits_from_changes(
         old_callee = nc.old_attrs.get("callee")
         new_callee = nc.attrs.get("callee")
         if old_callee and new_callee and old_callee != new_callee:
+            details = {
+                "old_callee": old_callee,
+                "new_callee": new_callee,
+            }
+            if resolved_line and resolved_file != "unknown":
+                details["command"] = (
+                    f"sed -i "
+                    f"'{resolved_line}s/\\<{old_callee}\\>/{new_callee}/g' "
+                    f"{resolved_file}"
+                )
             edits.append(EditInstruction(
                 edit_type="update_call",
                 file=resolved_file,
                 line=resolved_line,
-                details={
-                    "old_callee": old_callee,
-                    "new_callee": new_callee,
-                },
+                details=details,
             ))
             continue
+
+    # --- Edge additions: move_class/move_function (DEFINED_IN edges) ---
+    for ec in changes.added_edges():
+        if ec.edge_type != EdgeType.DEFINED_IN or not result_graph:
+            continue
+
+        source_node = result_graph.get_node(ec.source)
+        target_node = result_graph.get_node(ec.target)
+
+        if not source_node or source_node.node_type not in (NodeType.CLASS, NodeType.FUNCTION):
+            continue
+        if not target_node or target_node.node_type != NodeType.MODULE:
+            continue
+
+        item_name = source_node.attrs.get("name", "unknown")
+        source_file = source_node.attrs.get("file")
+        start_line = source_node.attrs.get("line")
+        end_line = source_node.attrs.get("end_line")
+        target_file = target_node.attrs.get("file")
+
+        # Infer target file from source directory if not available
+        if not target_file or target_file == "unknown":
+            if source_file:
+                source_dir = str(Path(source_file).parent)
+                target_mod_name = target_node.attrs.get("name", "unknown")
+                target_file = f"{source_dir}/{target_mod_name}.py"
+
+        if not (source_file and start_line and end_line and target_file):
+            continue
+
+        # Skip if item is already in the target file
+        if source_file == target_file:
+            continue
+
+        is_class = source_node.node_type == NodeType.CLASS
+        edit_type = "move_class" if is_class else "move_function"
+        name_key = "class_name" if is_class else "function_name"
+
+        edits.append(EditInstruction(
+            edit_type=edit_type,
+            file=source_file,
+            line=start_line,
+            details={
+                name_key: item_name,
+                "source_file": source_file,
+                "target_file": target_file,
+                "start_line": start_line,
+                "end_line": end_line,
+                "copy_command": (
+                    f"echo '' >> {target_file} && "
+                    f"sed -n '{start_line},{end_line}p' "
+                    f"{source_file} >> {target_file}"
+                ),
+                "delete_command": (
+                    f"sed -i '{start_line},{end_line}d' {source_file}"
+                ),
+            },
+        ))
 
     return edits
 
@@ -491,13 +678,15 @@ def plan(
     engine = create_engine(mode=mode, check_invariants=False)
     current = graph
     step_results: list[dict[str, Any]] = []
+    pipeline_error: str | None = None  # set on first step failure
 
     for i, step in enumerate(steps):
         try:
             op_type = resolve_operator(step.operator)
         except ValueError as e:
-            print_error(f"Step {i + 1}: {e}")
-            sys.exit(1)
+            pipeline_error = f"Step {i + 1}: {e}"
+            print_error(pipeline_error)
+            break
 
         rules = engine.catalog.create_rules(op_type, step.params)
 
@@ -505,6 +694,7 @@ def plan(
         total_applications = 0
         all_results: list[Any] = []
         any_graph_changes = False
+        step_failed = False
 
         for rule in rules:
             if step.repeat == "all":
@@ -515,8 +705,10 @@ def plan(
                 for r in results:
                     if not r.success:
                         msg = r.errors[0] if r.errors else "Unknown error"
-                        print_error(f"Step {i + 1} ({step.operator}): {msg}")
-                        sys.exit(1)
+                        pipeline_error = f"Step {i + 1} ({step.operator}): {msg}"
+                        print_error(pipeline_error)
+                        step_failed = True
+                        break
                     if r.changes:
                         all_edits.extend(
                             edits_from_changes(r.changes, r.result_graph, rule.name, rule.parameters)
@@ -524,6 +716,8 @@ def plan(
                         if r.changes.node_changes or r.changes.edge_changes:
                             any_graph_changes = True
                     current = r.result_graph
+                if step_failed:
+                    break
                 total_applications += len(results)
                 all_results.extend(results)
             else:
@@ -531,9 +725,15 @@ def plan(
                 if not result.success:
                     if len(rules) > 1:
                         continue  # this sub-rule didn't match, try next
+                    # update_import with 'names' creates one rule per name;
+                    # if a name has no imports, skip it instead of failing.
+                    if step.operator == "update_import" and step.params.get("names"):
+                        continue
                     msg = result.errors[0] if result.errors else "Unknown error"
-                    print_error(f"Step {i + 1} ({step.operator}): {msg}")
-                    sys.exit(1)
+                    pipeline_error = f"Step {i + 1} ({step.operator}): {msg}"
+                    print_error(pipeline_error)
+                    step_failed = True
+                    break
 
                 if result.changes:
                     step_edits = edits_from_changes(
@@ -546,15 +746,41 @@ def plan(
                 total_applications += 1
                 all_results.append(result)
 
+        if step_failed:
+            break
+
         if total_applications == 0:
-            print_error(f"Step {i + 1} ({step.operator}): No matches found")
-            sys.exit(1)
+            # update_import with 'names' is best-effort: if no imports match
+            # the specified names, that's fine — the moved items may not have
+            # been imported by any other file.  Warn instead of failing so the
+            # pipeline's earlier move commands are still usable.
+            if step.operator == "update_import" and step.params.get("names"):
+                err_console.print(
+                    f"  [yellow]Warning: Step {i + 1} ({step.operator}) "
+                    f"found no imports to update for "
+                    f"names={step.params['names']}[/yellow]"
+                )
+            else:
+                pipeline_error = f"Step {i + 1} ({step.operator}): No matches found"
+                print_error(pipeline_error)
+                break
+
+        # Deduplicate edits: multiple IMPORT nodes on the same line produce
+        # identical edit instructions (e.g., 10 names in one multi-line import).
+        seen: set[tuple] = set()
+        unique_edits: list[dict[str, Any]] = []
+        for e in all_edits:
+            d = e.to_dict()
+            key = (d.get("type"), d.get("file"), d.get("line"), json.dumps(d, sort_keys=True))
+            if key not in seen:
+                seen.add(key)
+                unique_edits.append(d)
 
         step_result: dict[str, Any] = {
             "step": i + 1,
             "operator": step.operator,
             "params": step.params,
-            "edits": [e.to_dict() for e in all_edits],
+            "edits": unique_edits,
         }
         if step.repeat == "all":
             step_result["applications"] = total_applications
@@ -567,12 +793,13 @@ def plan(
             )
         if n_edits == 0:
             if any_graph_changes:
-                print_error(
+                pipeline_error = (
                     f"Step {i + 1} ({step.operator}): Graph was modified but "
                     f"produced 0 file edits — this operator is not yet supported "
                     f"for edit generation"
                 )
-                sys.exit(1)
+                print_error(pipeline_error)
+                break
             err_console.print(
                 f"  [yellow]Warning: Step {i + 1} ({step.operator}) "
                 f"produced 0 edits — verify operator targets exist in the graph[/yellow]"
@@ -580,38 +807,98 @@ def plan(
 
     # Phase 4: Post-pipeline invariant verification (differential)
     # Only report violations INTRODUCED by the transformation, not pre-existing ones.
-    original_violations = verify_graph_invariants(graph)
-    original_keys = {(v.invariant_name, v.node_id, v.message) for v in original_violations}
+    # Skip verification if the pipeline already failed (partial transform).
+    new_errors: list[Any] = []
+    new_warnings: list[Any] = []
 
-    final_violations = verify_graph_invariants(current)
-    new_violations = [
-        v for v in final_violations
-        if (v.invariant_name, v.node_id, v.message) not in original_keys
-    ]
+    if not pipeline_error:
+        original_violations = verify_graph_invariants(graph)
+        original_keys = {(v.invariant_name, v.node_id, v.message) for v in original_violations}
 
-    new_errors = [v for v in new_violations if v.severity == InvariantSeverity.ERROR]
-    new_warnings = [v for v in new_violations if v.severity == InvariantSeverity.WARNING]
+        final_violations = verify_graph_invariants(current)
+        new_violations = [
+            v for v in final_violations
+            if (v.invariant_name, v.node_id, v.message) not in original_keys
+        ]
 
-    if verbose and new_violations:
-        for v in new_violations:
-            tag = "red" if v.severity == InvariantSeverity.ERROR else "yellow"
-            err_console.print(f"  [{tag}]{v.severity.value}: {v.message}[/{tag}]")
-            if v.fix_hint:
-                err_console.print(f"    [dim]Hint: {v.fix_hint}[/dim]")
+        new_errors = [v for v in new_violations if v.severity == InvariantSeverity.ERROR]
+        new_warnings = [v for v in new_violations if v.severity == InvariantSeverity.WARNING]
 
-    if new_errors:
-        err_console.print(
-            f"\n[red bold]Plan verification failed: "
-            f"{len(new_errors)} new error(s) introduced by this transformation[/red bold]"
-        )
-        for v in new_errors:
-            err_console.print(f"  [red]- {v.invariant_name}: {v.message}[/red]")
-            if v.fix_hint:
-                err_console.print(f"    [dim]Hint: {v.fix_hint}[/dim]")
-        sys.exit(1)
+        if verbose and new_violations:
+            for v in new_violations:
+                tag = "red" if v.severity == InvariantSeverity.ERROR else "yellow"
+                err_console.print(f"  [{tag}]{v.severity.value}: {v.message}[/{tag}]")
+                if v.fix_hint:
+                    err_console.print(f"    [dim]Hint: {v.fix_hint}[/dim]")
+
+        if new_errors:
+            err_console.print(
+                f"\n[red bold]Plan verification failed: "
+                f"{len(new_errors)} new error(s) introduced by this transformation[/red bold]"
+            )
+            for v in new_errors:
+                err_console.print(f"  [red]- {v.invariant_name}: {v.message}[/red]")
+                if v.fix_hint:
+                    err_console.print(f"    [dim]Hint: {v.fix_hint}[/dim]")
+            sys.exit(1)
 
     # Phase 5: Output
     total_edits = sum(len(s["edits"]) for s in step_results)
+
+    # Collect all concrete commands into a flat list for easy agent consumption.
+    # Ordering: copy commands (move_class) → import/other commands → delete
+    # commands (move_class, reverse line order to preserve line numbers).
+    copy_commands: list[str] = []
+    other_commands: list[str] = []
+    delete_commands: list[tuple[int, str]] = []  # (start_line, command)
+
+    for sr in step_results:
+        for ed in sr["edits"]:
+            if ed.get("type") in ("move_class", "move_function"):
+                copy_cmd = ed.get("copy_command")
+                del_cmd = ed.get("delete_command")
+                if copy_cmd:
+                    copy_commands.append(copy_cmd)
+                if del_cmd:
+                    delete_commands.append((ed.get("start_line", 0), del_cmd))
+            else:
+                cmd = ed.get("command")
+                if cmd:
+                    other_commands.append(cmd)
+
+    all_commands: list[str] = copy_commands + other_commands
+    # Delete commands in reverse line order (highest first) so line numbers
+    # stay valid as we delete from bottom to top.
+    for _, cmd in sorted(delete_commands, key=lambda x: -x[0]):
+        all_commands.append(cmd)
+
+    # Detect stdlib module shadowing: warn if any move_class targets a
+    # module name that matches a Python stdlib module.
+    hints: list[str] = []
+    try:
+        _stdlib_names = sys.stdlib_module_names  # Python 3.10+
+    except AttributeError:
+        _stdlib_names = {
+            "warnings", "logging", "types", "collections", "io", "os", "sys",
+            "json", "re", "abc", "typing", "copy", "csv", "email", "html",
+            "http", "test", "time", "code", "string", "signal", "secrets",
+        }
+    _seen_shadow_modules: set[str] = set()
+    for sr in step_results:
+        for ed in sr["edits"]:
+            if ed.get("type") in ("move_class", "move_function"):
+                target_file = ed.get("target_file", "")
+                mod_name = Path(target_file).stem if target_file else ""
+                if mod_name in _stdlib_names and mod_name not in _seen_shadow_modules:
+                    _seen_shadow_modules.add(mod_name)
+                    hints.append(
+                        f"Module '{mod_name}' shadows Python stdlib '{mod_name}'. "
+                        f"Files in the same package that use 'import {mod_name}' "
+                        f"for the stdlib module must alias it: "
+                        f"'import {mod_name} as _stdlib_{mod_name}' and update "
+                        f"stdlib usages to use the alias."
+                    )
+
     output_data: dict[str, Any] = {
         "steps": step_results,
         "summary": {
@@ -619,17 +906,34 @@ def plan(
             "total_edits": total_edits,
         },
     }
+    if all_commands:
+        output_data["commands"] = all_commands
+    if hints:
+        output_data["hints"] = hints
 
     if new_warnings:
         output_data["warnings"] = [v.to_dict() for v in new_warnings]
+
+    if pipeline_error:
+        output_data["error"] = pipeline_error
+        output_data["partial"] = True
 
     json_output = json.dumps(output_data, indent=2)
 
     if output:
         with open(output, "w") as f:
             f.write(json_output)
-        print_success(
-            f"Edit plan written to {output} ({total_edits} edits in {len(step_results)} steps)"
-        )
+        if pipeline_error:
+            print_error(
+                f"Partial plan written to {output} "
+                f"({total_edits} edits from {len(step_results)} completed steps)"
+            )
+        else:
+            print_success(
+                f"Edit plan written to {output} ({total_edits} edits in {len(step_results)} steps)"
+            )
     else:
         sys.stdout.write(json_output + "\n")
+
+    if pipeline_error:
+        sys.exit(1)

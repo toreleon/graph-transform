@@ -114,7 +114,7 @@ def _build_compact_spec() -> dict[str, Any]:
         "common_recipes": {
             "add_param + update callers": [
                 {"op": "add_param", "params": {"function_name": "F", "param_name": "P", "default_value": "V"}},
-                {"op": "add_arg", "repeat": "all", "params": {"callee": "F", "arg_name": "P", "arg_value": "V"}},
+                {"op": "add_arg", "repeat": "all", "params": {"callee": "F", "arg_name": "P", "arg_value": "V", "call_type": "direct"}},
             ],
             "rename_func + update calls": [
                 {"op": "rename_func", "params": {"old_name": "O", "new_name": "N"}},
@@ -124,10 +124,30 @@ def _build_compact_spec() -> dict[str, Any]:
                 {"op": "rename_module", "params": {"old_name": "pkg.old", "new_name": "pkg.new"}},
                 {"op": "update_import", "repeat": "all", "params": {"old_module": "pkg.old", "new_module": "pkg.new"}},
             ],
+            "move_class + update selective imports": [
+                {"op": "move_class", "params": {"class_name": "C", "target_module": "new_mod"}},
+                {"op": "update_import", "repeat": "all", "params": {
+                    "old_module": ".old_mod", "new_module": ".new_mod",
+                    "names": ["C"],
+                }},
+            ],
+            "move_function + update imports": [
+                {"op": "move_to_module", "params": {"item_name": "F", "target_module": "pkg.new_mod"}},
+                {"op": "update_import", "repeat": "all", "params": {
+                    "old_module": "pkg.old_mod", "new_module": "pkg.new_mod",
+                    "names": ["F"],
+                }},
+            ],
         },
+        "notes": [
+            "update_import `names` param (optional): only moves listed names, keeps other imports intact",
+            "move_class/move_to_module generate copy+delete commands; target file must exist and be included in --stdin",
+            "plan output includes `commands` (flat list of sed commands) and `hints` (e.g. stdlib shadowing)",
+            "add_param/add_arg/update_call accept optional `file` param to restrict matching to a specific file",
+            "add_arg/update_call/remove_arg accept optional `call_type: direct|method` to filter call sites",
+        ],
         "scoping": "Only files piped via --stdin are visible. Use grep -rl to find ALL files.",
         "limitations": [
-            "move_class/move_to_module: no edit generation — handle manually, use update_import for imports",
             "Inline mode (-op/-p): first match only. Use recipe with repeat: all for multiple matches",
         ],
     }
@@ -169,12 +189,14 @@ def _build_verbose_spec() -> dict[str, Any]:
                         "operator": "str",
                         "params": {},
                         "edits": [{
-                            "type": "str (add_parameter|add_argument|rename|update_import|...)",
+                            "type": "str (add_parameter|add_argument|rename|update_import|move_class|...)",
                             "file": "str",
                             "line": "int|null",
                         }],
                     }],
                     "summary": {"total_steps": "int", "total_edits": "int"},
+                    "commands": "list[str] — flat list of all sed commands in execution order (optional)",
+                    "hints": "list[str] — actionable warnings, e.g. stdlib module shadowing (optional)",
                 },
             },
             "list": {
@@ -220,18 +242,6 @@ def _build_verbose_spec() -> dict[str, Any]:
                     }},
                     {"op": "add_arg", "repeat": "all", "params": {
                         "callee": "F", "arg_name": "P", "arg_value": "V",
-                    }},
-                ]},
-            },
-            {
-                "name": "Add parameter + update only direct calls",
-                "when": "Adding a parameter but skipping method calls like obj.F() that share the name",
-                "recipe": {"steps": [
-                    {"op": "add_param", "params": {
-                        "function_name": "F", "param_name": "P", "default_value": "V",
-                    }},
-                    {"op": "add_arg", "repeat": "all", "params": {
-                        "callee": "F", "arg_name": "P", "arg_value": "V",
                         "call_type": "direct",
                     }},
                 ]},
@@ -268,6 +278,45 @@ def _build_verbose_spec() -> dict[str, Any]:
                 ]},
             },
             {
+                "name": "Move classes to a new module + update imports",
+                "when": "Moving specific classes from one module to another and updating all import references",
+                "recipe": {"steps": [
+                    {"op": "move_class", "params": {
+                        "class_name": "MyClass", "target_module": "new_mod",
+                    }},
+                    {"op": "update_import", "repeat": "all", "params": {
+                        "old_module": ".old_mod", "new_module": ".new_mod",
+                        "names": ["MyClass"],
+                    }},
+                ]},
+                "note": (
+                    "move_class generates copy+delete commands for the class code. "
+                    "update_import with `names` selectively moves only listed names. "
+                    "The target module file must exist (even if empty) and be included in --stdin. "
+                    "If hints mention stdlib shadowing, alias the stdlib import in affected files."
+                ),
+            },
+            {
+                "name": "Move function to new module + update imports",
+                "when": "Moving standalone functions from one module to another and updating all import references",
+                "recipe": {"steps": [
+                    {"op": "move_to_module", "params": {
+                        "item_name": "my_func", "target_module": "pkg.new_mod",
+                    }},
+                    {"op": "update_import", "repeat": "all", "params": {
+                        "old_module": "pkg.old_mod", "new_module": "pkg.new_mod",
+                        "names": ["my_func"],
+                    }},
+                ]},
+                "note": (
+                    "move_to_module generates copy+delete commands for the function code. "
+                    "update_import with `names` selectively moves only listed names. "
+                    "The target module file must exist (even if empty) and be included in --stdin. "
+                    "After applying commands, add 'from pkg.new_mod import my_func' to the source file "
+                    "if it still calls the function internally."
+                ),
+            },
+            {
                 "name": "Add field + encapsulate",
                 "when": "Adding a field with getter/setter methods",
                 "recipe": {"steps": [
@@ -288,7 +337,7 @@ def _build_verbose_spec() -> dict[str, Any]:
             "Use 'grep -rl \"symbol\" .' from the repo root to find all files."
         ),
         "limitations": [
-            "move_class and move_to_module do not support edit generation — handle those manually after using update_import for imports",
+            "move_to_module generates copy+delete commands for functions (like move_class); target file must exist and be included in --stdin",
             "Inline mode (-op/-p) applies each operator once (first match only). Use YAML recipe with repeat: all for multiple matches",
             "--stdin expects file PATHS, not file contents. Use: grep -rl 'pattern' | graph-transform plan --stdin",
         ],
@@ -297,7 +346,7 @@ def _build_verbose_spec() -> dict[str, Any]:
             "Invariant violation": "Transformation breaks semantic rules — add missing companion operators (e.g., add_arg after add_param)",
             "No Python files provided": "stdin/grep returned no results — broaden search pattern",
             "Mismatch: N operators but M param sets": "Each -op must have a matching -p",
-            "not yet supported for edit generation": "Operator modifies graph but can't generate file edits — handle manually (see limitations)",
+            "not yet supported for edit generation": "Operator modifies graph but can't generate file edits — handle manually (see limitations). Note: move_class and move_to_module now support edit generation.",
         },
     }
 

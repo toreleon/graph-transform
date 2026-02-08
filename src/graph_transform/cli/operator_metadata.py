@@ -176,6 +176,7 @@ OPERATOR_PARAMS: dict[OperatorType, dict[str, str]] = {
         "function_name": "Target function name (required)",
         "param_name": "New parameter name (required)",
         "default_value": "Default value (optional)",
+        "file": "Restrict to function in this file (optional — use when multiple functions share the same name)",
     },
     OperatorType.REMOVE_PARAM: {
         "function_name": "Target function name (required)",
@@ -223,11 +224,13 @@ OPERATOR_PARAMS: dict[OperatorType, dict[str, str]] = {
     OperatorType.UPDATE_IMPORT: {
         "old_module": "Current dotted module path (required)",
         "new_module": "New dotted module path (required)",
+        "names": "List of specific imported names to move (optional — if omitted, moves ALL imports from old_module)",
     },
     OperatorType.UPDATE_CALL: {
         "old_callee": "Current callee name (required)",
         "new_callee": "New callee name (required)",
         "call_type": "Filter by call type: 'direct' (foo()) or 'method' (obj.foo()) (optional)",
+        "file": "Restrict to calls in this file (optional)",
     },
     OperatorType.UPDATE_REFERENCE: {
         "old_ref": "Current reference name (required)",
@@ -239,11 +242,13 @@ OPERATOR_PARAMS: dict[OperatorType, dict[str, str]] = {
         "arg_name": "Argument name (required)",
         "arg_value": "Argument value (required)",
         "call_type": "Filter by call type: 'direct' (foo()) or 'method' (obj.foo()) (optional)",
+        "file": "Restrict to calls in this file (optional — use when same callee appears in multiple files)",
     },
     OperatorType.REMOVE_ARG: {
         "callee": "Target function callee name (required)",
         "arg_name": "Argument name to remove (required)",
         "call_type": "Filter by call type: 'direct' (foo()) or 'method' (obj.foo()) (optional)",
+        "file": "Restrict to calls in this file (optional)",
     },
     OperatorType.UPDATE_ARG: {
         "callee": "Target function callee name (required)",
@@ -251,6 +256,7 @@ OPERATOR_PARAMS: dict[OperatorType, dict[str, str]] = {
         "old_value": "Current argument value (required)",
         "new_value": "New argument value (required)",
         "call_type": "Filter by call type: 'direct' (foo()) or 'method' (obj.foo()) (optional)",
+        "file": "Restrict to calls in this file (optional)",
     },
     # Meta
     OperatorType.RENAME_FUNC: {
@@ -275,7 +281,7 @@ OPERATOR_EXAMPLES: dict[OperatorType, str] = {
     OperatorType.ADD_ARG: '{"callee": "get_data", "arg_name": "log", "arg_value": "False"}',
     OperatorType.ADD_IMPORT: '{"module": "os.path", "name": "join", "is_from_import": true}',
     OperatorType.CREATE_MODULE: '{"module_name": "utils"}',
-    OperatorType.UPDATE_IMPORT: '{"old_module": "fastapi.params", "new_module": "fastapi.param"}',
+    OperatorType.UPDATE_IMPORT: '{"old_module": ".exceptions", "new_module": ".warnings", "names": ["FileModeWarning"]}',
     OperatorType.UPDATE_CALL: '{"old_callee": "get_data", "new_callee": "fetch_data"}',
     OperatorType.UPDATE_REFERENCE: '{"old_ref": "old_name", "new_ref": "new_name"}',
 }

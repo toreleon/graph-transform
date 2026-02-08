@@ -750,14 +750,20 @@ class ProductionRuleCatalog:
         cls_name = p["class_name"]
         target_mod = _normalize_module_name(p["target_module"])
         cls_node = GraphNode("cls", NodeType.CLASS, {"name": cls_name})
-        mod_node = GraphNode("mod", NodeType.MODULE, {"name": target_mod})
+        old_mod_node = GraphNode("old_mod", NodeType.MODULE, {})  # match any module
+        new_mod_node = GraphNode("new_mod", NodeType.MODULE, {"name": target_mod})
+        # LHS: class defined in old_mod, new_mod exists.
+        # The DEFINED_IN edge is in L but NOT in K → gets removed by pushout.
+        # RHS adds a new DEFINED_IN edge to new_mod.
         return _make_rule(
             name=f"move_class:{cls_name}->{target_mod}",
             op_type=OperatorType.MOVE_CLASS,
-            lhs_nodes=[cls_node, mod_node], lhs_edges=[],
-            interface_nodes=[cls_node, mod_node], interface_edges=[],
-            rhs_nodes=[cls_node, mod_node],
-            rhs_edges=[GraphEdge("cls", "mod", EdgeType.DEFINED_IN)],
+            lhs_nodes=[cls_node, old_mod_node, new_mod_node],
+            lhs_edges=[GraphEdge("cls", "old_mod", EdgeType.DEFINED_IN)],
+            interface_nodes=[cls_node, old_mod_node, new_mod_node],
+            interface_edges=[],  # old edge excluded → deleted
+            rhs_nodes=[cls_node, old_mod_node, new_mod_node],
+            rhs_edges=[GraphEdge("cls", "new_mod", EdgeType.DEFINED_IN)],
             preconditions=[
                 _node_exists_precondition(NodeType.CLASS, "name", cls_name, "class_exists"),
                 _node_exists_precondition(NodeType.MODULE, "name", target_mod, "module_exists"),
@@ -822,7 +828,10 @@ class ProductionRuleCatalog:
     def _add_param(self, p: dict) -> ProductionRule:
         func_name = p["function_name"]
         param_name = p["param_name"]
-        func_node = GraphNode("func", NodeType.FUNCTION, {"name": func_name})
+        func_attrs: dict[str, Any] = {"name": func_name}
+        if p.get("file"):
+            func_attrs["file"] = p["file"]
+        func_node = GraphNode("func", NodeType.FUNCTION, func_attrs)
         param_node = GraphNode("param", NodeType.PARAMETER, {
             "name": param_name,
             "has_default": p.get("default_value") is not None,
@@ -1067,6 +1076,32 @@ class ProductionRuleCatalog:
     def _update_import(self, p: dict) -> ProductionRule | list[ProductionRule]:
         old_module = p["old_module"]
         new_module = p["new_module"]
+        names = p.get("names")  # Optional: list of specific imported names to move
+
+        if names:
+            # Selective mode: only move specific named imports.
+            # Creates one rule per name, matching module AND name.
+            # No submodule rules — `names` only applies to `from X import Y` pattern.
+            rules: list[ProductionRule] = []
+            for name in names:
+                lhs_node = GraphNode("imp", NodeType.IMPORT, {
+                    "module": old_module, "name": name,
+                })
+                k_node = GraphNode("imp", NodeType.IMPORT, {})
+                rhs_node = GraphNode("imp", NodeType.IMPORT, {"module": new_module})
+
+                rules.append(_make_rule(
+                    name=f"update_import:{old_module}->{new_module}[{name}]",
+                    op_type=OperatorType.UPDATE_IMPORT,
+                    lhs_nodes=[lhs_node], lhs_edges=[],
+                    interface_nodes=[k_node], interface_edges=[],
+                    rhs_nodes=[rhs_node], rhs_edges=[],
+                    preconditions=[],
+                    parameters=p,
+                    description=f"Move import of {name} from {old_module} to {new_module}",
+                    category="reference",
+                ))
+            return rules
 
         # Rule 1: Match `from old_module import X` pattern
         # e.g., from ansible.module_utils.facts.namespace import PrefixFactNamespace
@@ -1155,11 +1190,13 @@ class ProductionRuleCatalog:
 
     @staticmethod
     def _call_attrs(callee: str, p: dict) -> dict:
-        """Build CALL node attrs, optionally filtering by call_type."""
+        """Build CALL node attrs, optionally filtering by call_type and file."""
         attrs: dict = {"callee": callee}
         call_type = p.get("call_type")
         if call_type in ("direct", "method"):
             attrs["call_type"] = call_type
+        if p.get("file"):
+            attrs["file"] = p["file"]
         return attrs
 
     def _add_arg(self, p: dict) -> ProductionRule:

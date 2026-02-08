@@ -1100,6 +1100,90 @@ class TestGraphTransformationEngine:
         assert i2.attrs["module"] == "..pkg"
         assert i2.attrs["name"] == "new_mod"
 
+    def test_update_import_names_filter(self):
+        """update_import with names filter only moves specified names."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        # Multi-name import: from .exceptions import (ConnectionError, FileModeWarning, HTTPError)
+        graph.add_node(GraphNode("i1", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "ConnectionError",
+            "file": "pkg/__init__.py", "line": 10,
+        }))
+        graph.add_node(GraphNode("i2", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "FileModeWarning",
+            "file": "pkg/__init__.py", "line": 10,
+        }))
+        graph.add_node(GraphNode("i3", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "HTTPError",
+            "file": "pkg/__init__.py", "line": 10,
+        }))
+        # Same name in a different file (single import)
+        graph.add_node(GraphNode("i4", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "FileModeWarning",
+            "file": "pkg/models.py", "line": 3,
+        }))
+
+        rules = engine.catalog.create_rules(OperatorType.UPDATE_IMPORT, {
+            "old_module": ".exceptions",
+            "new_module": ".warnings",
+            "names": ["FileModeWarning"],
+        })
+        # One rule per name in the list
+        assert len(rules) == 1
+
+        current = graph
+        for rule in rules:
+            results = engine.apply_all_matches(rule, current)
+            for r in results:
+                assert r.success
+                current = r.result_graph
+
+        # Only FileModeWarning imports should have changed
+        i1 = current.get_node("i1")
+        assert i1.attrs["module"] == ".exceptions", "ConnectionError should stay in .exceptions"
+
+        i2 = current.get_node("i2")
+        assert i2.attrs["module"] == ".warnings", "FileModeWarning should move to .warnings"
+        assert i2.attrs["name"] == "FileModeWarning"
+
+        i3 = current.get_node("i3")
+        assert i3.attrs["module"] == ".exceptions", "HTTPError should stay in .exceptions"
+
+        i4 = current.get_node("i4")
+        assert i4.attrs["module"] == ".warnings", "FileModeWarning in models.py should also move"
+
+    def test_update_import_names_filter_multiple(self):
+        """update_import with multiple names moves all of them."""
+        engine = create_engine(check_invariants=False)
+        graph = TypedGraph()
+        graph.add_node(GraphNode("i1", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "ConnectionError",
+        }))
+        graph.add_node(GraphNode("i2", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "FileModeWarning",
+        }))
+        graph.add_node(GraphNode("i3", NodeType.IMPORT, {
+            "module": ".exceptions", "name": "RequestsWarning",
+        }))
+
+        rules = engine.catalog.create_rules(OperatorType.UPDATE_IMPORT, {
+            "old_module": ".exceptions",
+            "new_module": ".warnings",
+            "names": ["FileModeWarning", "RequestsWarning"],
+        })
+        assert len(rules) == 2  # One rule per name
+
+        current = graph
+        for rule in rules:
+            results = engine.apply_all_matches(rule, current)
+            for r in results:
+                assert r.success
+                current = r.result_graph
+
+        assert current.get_node("i1").attrs["module"] == ".exceptions"
+        assert current.get_node("i2").attrs["module"] == ".warnings"
+        assert current.get_node("i3").attrs["module"] == ".warnings"
+
     def test_apply_path(self):
         """Apply a sequence of rules as a transformation path."""
         engine = create_engine(check_invariants=False)
