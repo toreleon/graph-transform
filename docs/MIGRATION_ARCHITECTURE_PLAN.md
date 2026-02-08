@@ -5,13 +5,14 @@ This document outlines the architecture for extending graph-transform from a ref
 ## Table of Contents
 
 1. [Current Limitations](#current-limitations)
-2. [Multi-Layer Architecture](#multi-layer-architecture)
-3. [Unified Semantic Graph](#1-unified-semantic-graph-usg)
-4. [Idiom Pattern Library](#2-idiom-pattern-library)
-5. [Migration Orchestration Engine](#3-migration-orchestration-engine)
-6. [Incremental Migration with Mixed-State Support](#4-incremental-migration-with-mixed-state-support)
-7. [LLM Integration](#5-llm-integration-for-migration)
-8. [Implementation Roadmap](#6-implementation-roadmap)
+2. [Generalized Operator Architecture](#generalized-operator-architecture)
+3. [Multi-Layer Architecture](#multi-layer-architecture)
+4. [Unified Semantic Graph](#1-unified-semantic-graph-usg)
+5. [Idiom Pattern Library](#2-idiom-pattern-library)
+6. [Migration Orchestration Engine](#3-migration-orchestration-engine)
+7. [Incremental Migration with Mixed-State Support](#4-incremental-migration-with-mixed-state-support)
+8. [LLM Integration](#5-llm-integration-for-migration)
+9. [Implementation Roadmap](#6-implementation-roadmap)
 
 ---
 
@@ -25,6 +26,382 @@ This document outlines the architecture for extending graph-transform from a ref
 | Execution | Sequential | Phased, incremental, resumable |
 | Validation | Syntactic invariants | Semantic equivalence |
 | State | Stateless per-run | Track migration progress |
+
+---
+
+## Generalized Operator Architecture
+
+**Purpose**: Reduce all code transformations to a minimal set of fundamental operators that work for ANY language and ANY transformation task.
+
+### The Insight: Three Primitive Operators
+
+From graph rewriting theory and tree edit distance, **all code transformations reduce to three atomic operations**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     THE THREE PRIMITIVES                                     │
+│                                                                              │
+│    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                │
+│    │    INSERT    │    │    DELETE    │    │    UPDATE    │                │
+│    │              │    │              │    │              │                │
+│    │  Add node    │    │  Remove node │    │  Modify      │                │
+│    │  Add edge    │    │  Remove edge │    │  attribute   │                │
+│    └──────────────┘    └──────────────┘    └──────────────┘                │
+│                                                                              │
+│    Every code transformation is a composition of these three.               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Formal Definition
+
+```python
+@dataclass
+class Insert:
+    """Add element to the code graph."""
+    element: Node | Edge
+    position: Position          # Where to insert (scope, index, anchor)
+
+@dataclass
+class Delete:
+    """Remove element from the code graph."""
+    target: NodeRef | EdgeRef   # What to remove
+    cascade: bool = True        # Remove dependent edges?
+
+@dataclass
+class Update:
+    """Modify property of existing element."""
+    target: NodeRef | EdgeRef   # What to modify
+    property: str               # Which property
+    value: Any                  # New value
+```
+
+**That's it.** Three operators. Everything else is composition.
+
+---
+
+### Why Only Three?
+
+| Candidate | Reduces To |
+|-----------|------------|
+| MOVE | DELETE(old_location) + INSERT(new_location) |
+| RENAME | UPDATE(name_property) |
+| COPY | INSERT(clone_of_original) |
+| REPLACE | DELETE(old) + INSERT(new) |
+| WRAP | INSERT(wrapper) + UPDATE(parent_edge) |
+| EXTRACT | INSERT(new_entity) + UPDATE(replace_code_with_ref) |
+| INLINE | UPDATE(replace_ref_with_body) + DELETE(entity) |
+
+---
+
+### Composition Examples
+
+#### RENAME (Any Entity, Any Language)
+
+```
+RENAME(target, old_name, new_name) =
+    UPDATE(target, "name", new_name)
+    + for each ref in references(target):
+        UPDATE(ref, "target_name", new_name)
+```
+
+Works for: Python function, Go struct, Java class, TypeScript interface...
+
+#### MOVE (Any Entity, Any Language)
+
+```
+MOVE(entity, from_scope, to_scope) =
+    DELETE(edge(from_scope, CONTAINS, entity))
+    + INSERT(edge(to_scope, CONTAINS, entity))
+    + for each ref in references(entity):
+        UPDATE(ref, "qualified_path", new_path)
+```
+
+Works for: Move method to another class, move function to another module...
+
+#### EXTRACT_METHOD (Any Language)
+
+```
+EXTRACT_METHOD(code_range, new_name) =
+    INSERT(node(CALLABLE, name=new_name, body=code_range.code))
+    + INSERT(edge(scope, CONTAINS, new_node))
+    + UPDATE(code_range, replace_with=CALL(new_name, captured_vars))
+    + INSERT(edge(original, CALLS, new_node))
+```
+
+Works for: Python, Go, Java, Rust, TypeScript...
+
+#### Python try/except → Go error return
+
+```
+MIGRATE_ERROR_HANDLING(try_block) =
+    DELETE(try_block)
+    + INSERT(call_with_error_return)
+    + INSERT(if_err_check)
+    + UPDATE(handler_body, context=error_branch)
+```
+
+---
+
+### The Position System
+
+The key to making INSERT work across languages is a **universal position system**:
+
+```python
+@dataclass
+class Position:
+    """Where to insert an element."""
+
+    # Scope (container)
+    scope: NodeRef              # module, class, function, block
+
+    # Relative position
+    anchor: NodeRef | None      # Insert relative to this element
+    relation: Relation          # BEFORE | AFTER | FIRST_CHILD | LAST_CHILD
+
+    # Optional constraints
+    index: int | None           # Absolute position (if applicable)
+    slot: str | None            # Named slot (e.g., "parameters", "body", "decorators")
+
+
+class Relation(Enum):
+    BEFORE = "before"           # Insert before anchor
+    AFTER = "after"             # Insert after anchor
+    FIRST_CHILD = "first"       # Insert as first child of scope
+    LAST_CHILD = "last"         # Insert as last child of scope
+    REPLACE = "replace"         # Replace anchor
+```
+
+---
+
+### Node and Edge Types (Language-Agnostic)
+
+```python
+class NodeKind(Enum):
+    """Universal node types for any language."""
+
+    # Definitions
+    CALLABLE = "callable"       # function, method, lambda, closure
+    TYPE = "type"               # class, struct, interface, enum, trait
+    BINDING = "binding"         # variable, constant, parameter, field
+    CONTAINER = "container"     # module, package, namespace, file
+
+    # References
+    REFERENCE = "reference"     # import, use, require, include
+    CALL = "call"               # function/method invocation
+    ACCESS = "access"           # field/property access
+
+    # Control
+    BLOCK = "block"             # scope block, compound statement
+    BRANCH = "branch"           # if, match, switch
+    LOOP = "loop"               # for, while, loop
+
+    # Literals
+    LITERAL = "literal"         # string, number, boolean, null
+
+
+class EdgeKind(Enum):
+    """Universal edge types."""
+
+    CONTAINS = "contains"       # Parent contains child
+    REFERENCES = "references"   # Uses/calls/accesses
+    INHERITS = "inherits"       # Type inheritance
+    IMPLEMENTS = "implements"   # Interface implementation
+    DEPENDS = "depends"         # Dependency relationship
+    FLOWS_TO = "flows_to"       # Data/control flow
+```
+
+---
+
+### Derived Operators (Compositions)
+
+For convenience, we define **derived operators** as named compositions:
+
+```python
+# Level 1: Direct compositions of primitives
+RENAME = Compose(UPDATE)                           # Single UPDATE
+REMOVE = Compose(DELETE)                           # Single DELETE
+ADD = Compose(INSERT)                              # Single INSERT
+
+# Level 2: Multi-step compositions
+MOVE = Compose(DELETE, INSERT)                     # Relocate
+REPLACE = Compose(DELETE, INSERT)                  # Substitute
+COPY = Compose(INSERT)                             # Clone
+
+# Level 3: Pattern compositions (refactoring)
+EXTRACT = Compose(INSERT, UPDATE, INSERT)          # Extract entity
+INLINE = Compose(UPDATE, DELETE)                   # Inline entity
+WRAP = Compose(INSERT, UPDATE)                     # Add wrapper
+UNWRAP = Compose(UPDATE, DELETE)                   # Remove wrapper
+
+# Level 4: Complex compositions (migration, fixing)
+MIGRATE_PATTERN = Compose(DELETE, INSERT*, UPDATE*)  # Idiom translation
+ADD_GUARD = Compose(INSERT, UPDATE)                  # Safety check
+CHANGE_SIGNATURE = Compose(UPDATE, UPDATE*)          # API change
+```
+
+---
+
+### How Current 41 Operators Map to Primitives
+
+| Current Operator | Primitive Composition |
+|------------------|----------------------|
+| ADD_METHOD | INSERT(node) + INSERT(edge) |
+| REMOVE_METHOD | DELETE(node) |
+| RENAME_METHOD | UPDATE(name) + UPDATE*(refs) |
+| MOVE_METHOD | DELETE(edge) + INSERT(edge) + UPDATE*(refs) |
+| EXTRACT_METHOD | INSERT(node) + INSERT(edge) + UPDATE(body) |
+| INLINE_METHOD | UPDATE(call_sites) + DELETE(node) |
+| PULL_UP_METHOD | DELETE(edge) + INSERT(edge) |
+| PUSH_DOWN_METHOD | DELETE(edge) + INSERT(edge) |
+| CHANGE_SIGNATURE | UPDATE(params) + UPDATE*(call_sites) |
+| ADD_FIELD | INSERT(node) + INSERT(edge) |
+| REMOVE_FIELD | DELETE(node) |
+| ENCAPSULATE_FIELD | INSERT(getter) + INSERT(setter) + UPDATE*(refs) |
+| ADD_IMPORT | INSERT(node) |
+| REMOVE_IMPORT | DELETE(node) |
+| UPDATE_IMPORT | UPDATE(target) |
+| UPDATE_CALL | UPDATE(callee) |
+| ... | ... |
+
+**All 41 operators** reduce to combinations of INSERT, DELETE, UPDATE.
+
+---
+
+### Implementation Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         USER-FACING OPERATIONS                               │
+│   Refactoring    Migration    Code Fixing    Upgrade    Security            │
+│   ───────────    ─────────    ───────────    ───────    ────────            │
+│   rename         translate    add_guard      deprecate  sanitize            │
+│   extract        convert      fix_null       update_api add_auth            │
+│   move           bridge       add_cleanup    migrate    encrypt             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DERIVED OPERATORS                                    │
+│   RENAME  MOVE  EXTRACT  INLINE  WRAP  UNWRAP  REPLACE  COPY               │
+│   (named compositions for common patterns)                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         THREE PRIMITIVES                                     │
+│                                                                              │
+│              INSERT          DELETE          UPDATE                         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         GRAPH REWRITING ENGINE                               │
+│   DPO/SPO semantics    Gluing conditions    Preconditions                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         LANGUAGE ADAPTERS                                    │
+│   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐              │
+│   │ Python │  │   Go   │  │  Java  │  │  Rust  │  │   TS   │              │
+│   └────────┘  └────────┘  └────────┘  └────────┘  └────────┘              │
+│   Parse, emit syntax; map NodeKind/EdgeKind to language constructs          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Language Adapter Interface
+
+```python
+class LanguageAdapter(Protocol):
+    """Minimal interface for language support."""
+
+    language: str
+
+    def parse(self, source: str) -> Graph:
+        """Parse source code into universal graph."""
+        ...
+
+    def emit(self, graph: Graph) -> str:
+        """Generate source code from graph."""
+        ...
+
+    def map_node(self, kind: NodeKind, attrs: dict) -> LanguageNode:
+        """Map universal node to language-specific construct."""
+        ...
+
+    def map_position(self, pos: Position) -> LanguagePosition:
+        """Map universal position to language-specific location."""
+        ...
+```
+
+The adapter handles **syntax**; the primitives handle **semantics**.
+
+---
+
+### Benefits of This Design
+
+| Aspect | Benefit |
+|--------|---------|
+| **Simplicity** | Only 3 operations to implement per language |
+| **Composability** | Complex transforms built from simple parts |
+| **Provability** | Easier to verify correctness of 3 ops than 41 |
+| **Extensibility** | New transforms = new compositions, not new primitives |
+| **Cross-language** | Same primitives work for any language |
+| **Optimization** | Can optimize at primitive level (batch INSERTs, etc.) |
+
+---
+
+### Example: Cross-Language Migration
+
+**Python async/await → Go goroutine**
+
+```python
+# High-level: MIGRATE_ASYNC_TO_GOROUTINE
+
+def migrate_async_to_goroutine(async_func: NodeRef) -> list[Primitive]:
+    return [
+        # Remove async keyword
+        UPDATE(async_func, "async", False),
+
+        # For each await call, wrap in goroutine
+        *[
+            Compose(
+                INSERT(Node(CALL, name="go", args=[await_expr.func])),
+                INSERT(Node(CALLABLE, name="anonymous", body=await_expr)),
+                DELETE(await_expr),
+            )
+            for await_expr in find_awaits(async_func)
+        ],
+
+        # Add channel for result
+        INSERT(Node(BINDING, name="resultChan", type="chan Result")),
+
+        # Update return to channel send
+        UPDATE(return_stmt, kind="channel_send", target="resultChan"),
+    ]
+```
+
+Same three primitives, completely different languages.
+
+---
+
+### Comparison: 41 Specific vs 3 Fundamental
+
+| Approach | Operators | Languages | Use Cases | Maintenance |
+|----------|-----------|-----------|-----------|-------------|
+| Current (specific) | 41 | Python only | Refactoring only | O(operators × languages) |
+| Fundamental (3) | 3 | Any | Any transformation | O(languages) |
+
+**The math**:
+- Current: 41 operators × N languages = 41N implementations
+- Fundamental: 3 operators × N languages = 3N implementations + compositions
+
+For 5 languages: 205 vs 15 + reusable compositions
 
 ---
 
@@ -716,86 +1093,264 @@ class MigrationLLMInterface:
 
 ## 6. Implementation Roadmap
 
-### Phase 1: Foundation (Extends Current)
+### Phase 1: Three Primitives Core
+
+**Goal**: Implement the fundamental INSERT, DELETE, UPDATE operators with DPO/SPO semantics.
 
 ```
 src/graph_transform/
-├── semantic/                    # NEW: Semantic layer
-│   ├── unified_graph.py         # Language-agnostic USG
-│   ├── concept_mapping.py       # Type/concept translations
-│   └── lifters/                 # AST → Semantic per language
-│       ├── python_lifter.py
-│       └── go_lifter.py
-├── patterns/                    # NEW: Idiom patterns
-│   ├── pattern_dsl.py           # Pattern definition language
-│   ├── idiom_matcher.py         # Extended MatchFinder
-│   └── library/                 # Pattern YAML files
-│       ├── python_to_go/
-│       ├── react_class_to_hooks/
-│       └── django_to_fastapi/
+├── core/
+│   ├── primitives.py            # INSERT, DELETE, UPDATE definitions
+│   ├── position.py              # Universal position system
+│   ├── node_kinds.py            # NodeKind, EdgeKind enums
+│   └── graph.py                 # Universal graph representation
+├── rewriting/
+│   ├── engine.py                # DPO/SPO rewriting engine
+│   ├── gluing.py                # Gluing condition checks
+│   └── preconditions.py         # Pre/post condition validation
 ```
 
-### Phase 2: Migration Engine
+**Deliverables**:
+- `Insert(element, position)` with scope/anchor/relation support
+- `Delete(target, cascade)` with dangling edge handling
+- `Update(target, property, value)` with reference propagation
+- Formal verification of primitive correctness
+
+---
+
+### Phase 2: Derived Operators (Compositions)
+
+**Goal**: Build standard refactoring/migration operators as compositions of primitives.
 
 ```
-├── migration/                   # NEW: Orchestration
+├── operators/
+│   ├── compositions.py          # RENAME, MOVE, EXTRACT, INLINE, etc.
+│   ├── refactoring.py           # Standard refactoring compositions
+│   ├── migration.py             # Cross-language migration compositions
+│   ├── fixing.py                # Code repair compositions
+│   └── registry.py              # Operator registry and dispatch
+```
+
+**Composition Library**:
+
+```python
+# Example compositions defined declaratively
+COMPOSITIONS = {
+    "RENAME": [
+        Update(target="$entity", property="name", value="$new_name"),
+        ForEach("$ref", in_="references($entity)",
+            Update(target="$ref", property="target_name", value="$new_name")
+        ),
+    ],
+
+    "MOVE": [
+        Delete(edge="($old_scope, CONTAINS, $entity)"),
+        Insert(edge="($new_scope, CONTAINS, $entity)"),
+        ForEach("$ref", in_="references($entity)",
+            Update(target="$ref", property="qualified_path", value="$new_path")
+        ),
+    ],
+
+    "EXTRACT_CALLABLE": [
+        Insert(node="CALLABLE", attrs={"name": "$new_name", "body": "$code"}),
+        Insert(edge="($scope, CONTAINS, $new_node)"),
+        Update(target="$original", property="body",
+               value="CALL($new_name, $captured_vars)"),
+        Insert(edge="($original, CALLS, $new_node)"),
+    ],
+}
+```
+
+**Deliverables**:
+- All 41 current operators expressed as compositions
+- New operators: WRAP, UNWRAP, ADD_GUARD, MIGRATE_PATTERN
+- Composition validation (verify primitive sequences are valid)
+
+---
+
+### Phase 3: Language Adapters
+
+**Goal**: Implement parse/emit adapters for multiple languages.
+
+```
+├── adapters/
+│   ├── base.py                  # LanguageAdapter protocol
+│   ├── python/
+│   │   ├── parser.py            # Python AST → Universal Graph
+│   │   ├── emitter.py           # Universal Graph → Python source
+│   │   └── mappings.py          # NodeKind → Python constructs
+│   ├── go/
+│   │   ├── parser.py
+│   │   ├── emitter.py
+│   │   └── mappings.py
+│   ├── typescript/
+│   │   ├── parser.py
+│   │   ├── emitter.py
+│   │   └── mappings.py
+│   └── java/
+│       ├── parser.py
+│       ├── emitter.py
+│       └── mappings.py
+```
+
+**Adapter Interface**:
+
+```python
+class LanguageAdapter(Protocol):
+    language: str
+
+    def parse(self, source: str) -> Graph:
+        """Source code → Universal graph."""
+
+    def emit(self, graph: Graph) -> str:
+        """Universal graph → Source code."""
+
+    def map_node(self, kind: NodeKind, attrs: dict) -> str:
+        """NodeKind → Language-specific syntax."""
+
+    def map_position(self, pos: Position) -> SourceLocation:
+        """Universal position → Source location."""
+```
+
+**Deliverables**:
+- Python adapter (refactor from current implementation)
+- Go adapter
+- TypeScript adapter
+- Adapter test suite (round-trip: parse → emit → parse)
+
+---
+
+### Phase 4: Idiom Patterns & Migration
+
+**Goal**: High-level pattern matching and cross-language migration.
+
+```
+├── patterns/
+│   ├── matcher.py               # Pattern matching on universal graph
+│   ├── dsl.py                   # Pattern definition DSL
+│   └── library/                 # Pattern definitions (YAML)
+│       ├── error_handling.yaml
+│       ├── concurrency.yaml
+│       ├── collections.yaml
+│       └── frameworks/
+│           ├── django_to_fastapi.yaml
+│           └── react_class_to_hooks.yaml
+├── migration/
 │   ├── orchestrator.py          # Multi-phase execution
-│   ├── plan.py                  # MigrationPlan data model
+│   ├── plan.py                  # Migration plan model
 │   ├── state.py                 # Progress tracking, checkpoints
-│   ├── interop/                 # Bridge generation
-│   │   ├── cgo_bridge.py
-│   │   └── pyo3_bridge.py
+│   ├── bridge.py                # FFI bridge generation
 │   └── strategies/
 │       ├── big_bang.py
 │       ├── incremental.py
 │       └── strangler.py
 ```
 
-### Phase 3: LLM Integration
+**Deliverables**:
+- Pattern DSL for complex idiom matching
+- Migration orchestrator with checkpointing
+- Bridge generation for mixed-language codebases
+
+---
+
+### Phase 5: LLM Integration
+
+**Goal**: Hybrid LLM + graph approach for ambiguous cases.
 
 ```
-├── llm/                         # NEW: LLM interface
+├── llm/
 │   ├── interface.py             # Abstract LLM protocol
-│   ├── planning.py              # Migration planning
+│   ├── planning.py              # LLM-assisted migration planning
 │   ├── ambiguity.py             # Handle edge cases
-│   └── verification.py          # Semantic equivalence
+│   └── verification.py          # Semantic equivalence checking
 ```
 
-### New CLI Commands
+**Deliverables**:
+- LLM fallback for low-confidence transformations
+- LLM-assisted pattern suggestion
+- Semantic equivalence verification
+
+---
+
+### CLI Commands
 
 ```bash
-# Analyze codebase for migration
+# === PRIMITIVE OPERATIONS ===
+# Direct primitive execution (advanced users)
+graph-transform primitive insert --node CALLABLE --name "foo" --scope "MyClass"
+graph-transform primitive delete --target "MyClass.old_method"
+graph-transform primitive update --target "my_func" --property "name" --value "new_name"
+
+# === DERIVED OPERATIONS ===
+# Standard refactoring (compositions)
+graph-transform rename --target "old_name" --to "new_name" src/
+graph-transform move --target "MyClass.method" --to "OtherClass" src/
+graph-transform extract --from "my_func:10-20" --name "helper" src/
+
+# === MIGRATION ===
+# Cross-language migration
 graph-transform migrate analyze src/ --from python --to go
-
-# Generate migration plan
 graph-transform migrate plan src/ --from python:3.11 --to go:1.21 -o plan.yaml
-
-# Execute migration (incremental, resumable)
-graph-transform migrate run plan.yaml --batch-size 10 --checkpoint-dir .migration/
-
-# Check migration status
+graph-transform migrate run plan.yaml --checkpoint-dir .migration/
 graph-transform migrate status plan.yaml
+graph-transform migrate bridge src/api/ --manifest manifest.yaml
 
-# Generate interop bridges for dual-mode
-graph-transform migrate bridge src/api/ --manifest migration_manifest.yaml
+# === CODE FIXING ===
+graph-transform fix null-checks src/
+graph-transform fix resource-leaks src/
+graph-transform fix deprecated-api --mapping api_changes.yaml src/
 
-# Verify semantic equivalence
-graph-transform migrate verify --source src/auth.py --target src/auth.go
+# === INSPECTION ===
+graph-transform show-composition EXTRACT_METHOD
+graph-transform list-operators --category refactoring
+graph-transform list-adapters
 ```
 
 ---
 
-## Summary: From Refactoring Tool to Migration Platform
+## Summary: Three Primitives → Universal Code Transformation
 
-| Capability | Current | With Migration Extensions |
-|------------|---------|--------------------------|
-| **Scope** | Single file/module | Entire codebase |
-| **Languages** | Python only | Multi-language + semantic layer |
-| **Patterns** | 41 refactoring operators | + Idiom patterns, framework migrations |
-| **Execution** | One-shot | Phased, incremental, resumable |
-| **State** | Stateless | Checkpointed, mixed-state aware |
-| **Validation** | Syntactic invariants | + Semantic equivalence |
-| **LLM Role** | Intent translation | + Ambiguity handling, verification |
-| **Output** | Edit instructions | + Bridge code, migration manifest |
+| Layer | Components | Purpose |
+|-------|------------|---------|
+| **Primitives** | INSERT, DELETE, UPDATE | Atomic operations on graph |
+| **Compositions** | RENAME, MOVE, EXTRACT, ... | Named sequences of primitives |
+| **Patterns** | Idiom library, DSL | Complex multi-node transformations |
+| **Adapters** | Python, Go, TS, Java, ... | Language-specific parse/emit |
+| **Orchestration** | Migration engine | Large-scale transformation management |
+| **LLM** | Fallback, verification | Handle ambiguity and creativity |
 
-The key insight: **graph-transform provides the formal foundation** (DPO rewriting, pattern matching, invariants), while the migration layer adds **orchestration, state management, and semantic awareness** needed for large-scale transformations.
+```
+                    ┌─────────────────────────────────────────┐
+                    │          ALL TRANSFORMATIONS            │
+                    │  Refactoring • Migration • Fixing       │
+                    └─────────────────┬───────────────────────┘
+                                      │
+                    ┌─────────────────▼───────────────────────┐
+                    │         DERIVED OPERATORS               │
+                    │  RENAME • MOVE • EXTRACT • INLINE • ... │
+                    └─────────────────┬───────────────────────┘
+                                      │
+                    ┌─────────────────▼───────────────────────┐
+                    │         THREE PRIMITIVES                │
+                    │      INSERT  •  DELETE  •  UPDATE       │
+                    └─────────────────┬───────────────────────┘
+                                      │
+                    ┌─────────────────▼───────────────────────┐
+                    │         UNIVERSAL GRAPH                 │
+                    │   NodeKind • EdgeKind • Position        │
+                    └─────────────────┬───────────────────────┘
+                                      │
+          ┌───────────────┬───────────┴───────────┬───────────────┐
+          ▼               ▼                       ▼               ▼
+    ┌──────────┐    ┌──────────┐           ┌──────────┐    ┌──────────┐
+    │  Python  │    │    Go    │           │    TS    │    │   Java   │
+    │ Adapter  │    │ Adapter  │           │ Adapter  │    │ Adapter  │
+    └──────────┘    └──────────┘           └──────────┘    └──────────┘
+```
+
+**The key insight**: By reducing everything to 3 primitives operating on a universal graph, we achieve:
+- **Simplicity**: 3 operations to implement, not 41
+- **Universality**: Same primitives for any language
+- **Composability**: Complex transforms = primitive sequences
+- **Provability**: Easier to verify correctness
+- **Extensibility**: New transforms without new primitives
