@@ -18,6 +18,8 @@ from .commands.emit_cmd import emit
 from .commands.list_cmd import list_operators
 from .commands.migrate_cmd import migrate
 from .commands.plan_cmd import plan
+from .commands.query_cmd import query_cmd
+from .commands.spec_cmd import spec
 from .commands.verify_cmd import verify_graph
 from .commands.visualize_cmd import visualize
 
@@ -48,6 +50,8 @@ cli.add_command(list_operators, name="list")
 cli.add_command(apply_operator, name="apply")
 cli.add_command(batch_operators, name="batch")
 cli.add_command(plan, name="plan")
+cli.add_command(query_cmd, name="query")
+cli.add_command(spec, name="spec")
 cli.add_command(verify_graph, name="verify")
 cli.add_command(dry_run, name="dry-run")
 cli.add_command(visualize, name="visualize")
