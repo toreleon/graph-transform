@@ -242,7 +242,7 @@ class TestBuildFromDirectory:
     def test_empty_directory(self, tmp_path):
         empty = tmp_path / "empty"
         empty.mkdir()
-        with pytest.raises(FileNotFoundError, match="No .py files"):
+        with pytest.raises(FileNotFoundError, match="No source files"):
             build_graph_from_source(empty)
 
     def test_nonexistent_path(self):

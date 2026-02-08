@@ -1,12 +1,14 @@
 """
-batch -- Apply multiple refactoring operators in sequence.
+batch -- Apply multiple primitives/compositions in sequence.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
@@ -17,58 +19,124 @@ from graph_transform.cli.formatting import (
     print_graph_summary,
     print_success,
 )
-from graph_transform.cli.operator_metadata import resolve_operator
-from graph_transform.engine.core import create_engine
-from graph_transform.engine.transformation_path import RuleApplication, TransformationPath
+from graph_transform.cli.primitive_metadata import (
+    resolve_composition,
+    resolve_primitive,
+)
+from graph_transform.core.primitives import (
+    CompositionRegistry,
+    primitive_from_dict,
+)
 from graph_transform.io.serialization import load_graph, save_graph
 
 
-class OperatorStep:
-    """A single operator step in a batch."""
-    
-    def __init__(self, operator: str, params: dict, repeat: str = "once"):
-        self.operator = operator
-        self.params = params
-        self.repeat = repeat  # "once" or "all"
+@dataclass
+class TransformStep:
+    """A single transformation step in a batch."""
+
+    step_type: str  # "primitive" or "composition"
+    name: str
+    params: dict = field(default_factory=dict)
+    repeat: str = "once"  # "once" or "all" (for compositions)
 
 
-def parse_yaml_file(filepath: str) -> tuple[str, list[OperatorStep]]:
+@dataclass
+class BatchResult:
+    """Result of a batch transformation."""
+
+    success: bool
+    steps_completed: int
+    total_steps: int
+    failed_step: int | None = None
+    error: str | None = None
+
+
+def parse_yaml_file(filepath: str) -> tuple[str, list[TransformStep]]:
     """Parse a YAML batch file.
-    
-    Format:
-    description: "Add logging parameter"
-    steps:
-      - op: add_param
-        params:
-          function_name: foo
-          param_name: bar
+
+    New format:
+        description: "Add helper function"
+        steps:
+          - primitive: insert_node
+            params:
+              node_id: "func:helper"
+              node_kind: callable
+              attrs: {name: "helper"}
+
+          - composition: RENAME
+            params:
+              target: "func:old"
+              new_name: "new_name"
     """
     with open(filepath) as f:
         data = yaml.safe_load(f)
-    
-    description = data.get("description", "Batch refactoring")
+
+    description = data.get("description", "Batch transformation")
     steps = []
+
     for step in data.get("steps", []):
-        steps.append(OperatorStep(
-            operator=step["op"],
-            params=step.get("params", {}),
-            repeat=step.get("repeat", "once"),
-        ))
+        if "primitive" in step:
+            steps.append(TransformStep(
+                step_type="primitive",
+                name=step["primitive"],
+                params=step.get("params", {}),
+            ))
+        elif "composition" in step:
+            steps.append(TransformStep(
+                step_type="composition",
+                name=step["composition"],
+                params=step.get("params", {}),
+                repeat=step.get("repeat", "once"),
+            ))
+        else:
+            raise ValueError(f"Invalid step: must have 'primitive' or 'composition' key")
+
     return description, steps
 
 
-def parse_inline_operators(operators: tuple, params: tuple) -> list[OperatorStep]:
-    """Parse inline -op/-p pairs."""
-    if len(operators) != len(params):
-        raise ValueError(f"Mismatch: {len(operators)} operators but {len(params)} param sets")
-    
+def parse_inline_steps(
+    primitives: tuple[str, ...],
+    compositions: tuple[str, ...],
+    params: tuple[str, ...],
+) -> list[TransformStep]:
+    """Parse inline --primitive/--composition and --params pairs.
+
+    The order of params corresponds to the order of primitives + compositions.
+    """
+    total_ops = len(primitives) + len(compositions)
+    if total_ops != len(params):
+        raise ValueError(
+            f"Mismatch: {total_ops} operations but {len(params)} param sets"
+        )
+
     steps = []
-    for op, p in zip(operators, params):
+    param_idx = 0
+
+    # Process primitives first, then compositions
+    for prim in primitives:
         try:
-            params_dict = json.loads(p)
+            params_dict = json.loads(params[param_idx])
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON for operator '{op}': {e}")
-        steps.append(OperatorStep(operator=op, params=params_dict))
+            raise ValueError(f"Invalid JSON for primitive '{prim}': {e}")
+        steps.append(TransformStep(
+            step_type="primitive",
+            name=prim,
+            params=params_dict,
+        ))
+        param_idx += 1
+
+    for comp in compositions:
+        try:
+            params_dict = json.loads(params[param_idx])
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON for composition '{comp}': {e}")
+        steps.append(TransformStep(
+            step_type="composition",
+            name=comp,
+            params=params_dict,
+        ))
+        param_idx += 1
+
     return steps
 
 
@@ -80,20 +148,19 @@ def parse_inline_operators(operators: tuple, params: tuple) -> list[OperatorStep
     help="YAML file defining the batch steps.",
 )
 @click.option(
-    "--operator", "-op",
+    "--primitive", "-prim",
     multiple=True,
-    help="Operator name (can be repeated).",
+    help="Primitive name (can be repeated).",
+)
+@click.option(
+    "--composition", "-comp",
+    multiple=True,
+    help="Composition name (can be repeated).",
 )
 @click.option(
     "--params", "-p",
     multiple=True,
-    help="JSON params for each operator (must match -op count).",
-)
-@click.option(
-    "--mode", "-m",
-    type=click.Choice(["dpo", "spo"]),
-    default="dpo",
-    help="Rewriting mode (default: dpo).",
+    help="JSON params for each operation (must match total operation count).",
 )
 @click.option(
     "--output", "-o",
@@ -101,140 +168,129 @@ def parse_inline_operators(operators: tuple, params: tuple) -> list[OperatorStep
     default=None,
     help="Output file for result graph (default: stdout).",
 )
-@click.option(
-    "--check-per-step",
-    is_flag=True,
-    help="Run invariants after each step (default: only at end).",
-)
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output.")
 def batch_operators(
     graph_file: str,
     file: str | None,
-    operator: tuple[str, ...],
+    primitive: tuple[str, ...],
+    composition: tuple[str, ...],
     params: tuple[str, ...],
-    mode: str,
     output: str | None,
-    check_per_step: bool,
     verbose: bool,
 ) -> None:
-    """Apply multiple refactoring operators in sequence.
-    
-    Use either a YAML file (-f) or inline operators (-op/-p pairs).
-    
+    """Apply multiple primitives/compositions in sequence.
+
+    Use either a YAML file (-f) or inline operations.
+
     Examples:
-    
+
         # YAML file
         graph-transform batch graph.json -f refactor.yaml -o result.json
-        
-        # Inline operators
+
+        # Inline operations
         graph-transform batch graph.json \\
-          -op add_param -p '{"function_name":"foo","param_name":"bar"}' \\
-          -op add_arg -p '{"callee":"foo","arg_name":"bar","arg_value":"True"}' \\
-          -o result.json
+          --primitive insert_node -p '{"node_id":"func:new","node_kind":"callable","attrs":{"name":"new"}}' \\
+          --composition RENAME -p '{"target":"func:old","new_name":"renamed"}'
     """
     # Parse steps from either YAML or inline
     if file:
-        if operator or params:
-            print_error("Cannot use both --file and inline --operator/--params")
+        if primitive or composition or params:
+            print_error("Cannot use both --file and inline operations")
             sys.exit(2)
         try:
             description, steps = parse_yaml_file(file)
         except Exception as e:
             print_error(f"Failed to parse YAML file: {e}")
             sys.exit(2)
-    elif operator:
+    elif primitive or composition:
         try:
-            steps = parse_inline_operators(operator, params)
-            description = f"Batch of {len(steps)} operators"
+            steps = parse_inline_steps(primitive, composition, params)
+            description = f"Batch of {len(steps)} operations"
         except ValueError as e:
             print_error(str(e))
             sys.exit(2)
     else:
-        print_error("Must provide either --file or --operator/--params pairs")
+        print_error("Must provide either --file or inline operations")
         sys.exit(2)
-    
+
     if not steps:
         print_error("No steps defined")
         sys.exit(2)
-    
+
     # Load graph
     try:
         graph = load_graph(graph_file)
     except (FileNotFoundError, ValueError) as e:
         print_error(str(e))
         sys.exit(2)
-    
-    # Create engine and path
-    # For per-step checking, enable invariants; otherwise disable until end
-    engine = create_engine(mode=mode, check_invariants=check_per_step)
-    path = TransformationPath(initial_graph=graph, current_graph=graph)
-    path.metadata["description"] = description
-    
+
+    # Execute steps
     current = graph
-    failed = False
-    
+    steps_completed = 0
+
     for i, step in enumerate(steps):
+        step_desc = f"{step.step_type}:{step.name}"
         if verbose:
-            err_console.print(f"[dim]Step {i+1}/{len(steps)}: {step.operator}" + 
-                              (" (all matches)" if step.repeat == "all" else "") + "[/dim]")
-        
+            err_console.print(f"[dim]Step {i+1}/{len(steps)}: {step_desc}[/dim]")
+
         try:
-            op_type = resolve_operator(step.operator)
-        except ValueError as e:
-            print_error(f"Step {i+1}: {e}")
-            failed = True
-            break
-        
-        rule = engine.catalog.create_rule(op_type, step.params)
-        
-        # Apply to all matches or just one
-        if step.repeat == "all":
-            results = engine.apply_all_matches(rule, current)
-            if not results:
-                print_error(f"Step {i+1} ({step.operator}) failed: No matches found")
-                failed = True
-                break
-            # Get the final result after all applications
-            result = results[-1]
-            if verbose and len(results) > 1:
-                err_console.print(f"  [dim]Applied to {len(results)} matches[/dim]")
-        else:
-            result = engine.apply_rule(rule, current)
-        
-        app = RuleApplication(rule=rule, result=result)
-        path.add_step(app)
-        
+            if step.step_type == "primitive":
+                result = _execute_primitive(current, step)
+            else:
+                result = _execute_composition(current, step)
+        except Exception as e:
+            print_error(f"Step {i+1} ({step_desc}) failed: {e}")
+            sys.exit(1)
+
         if not result.success:
-            print_error(f"Step {i+1} ({step.operator}) failed: {result.errors[0] if result.errors else 'Unknown error'}")
-            failed = True
-            break
-        
-        current = result.result_graph
-    
-    # Final invariant check if not checking per-step
-    if not failed and not check_per_step and current:
-        final_engine = create_engine(mode=mode, check_invariants=True)
-        violations = final_engine.verify_graph(current)
-        errors = [v for v in violations if v.severity == "error"]
-        if errors:
-            print_error(f"Final invariant check failed with {len(errors)} error(s):")
-            for v in errors[:5]:  # Show first 5
-                err_console.print(f"  [red]•[/red] {v.invariant_name}: {v.message}")
-            if len(errors) > 5:
-                err_console.print(f"  [dim]... and {len(errors) - 5} more[/dim]")
-            failed = True
-    
+            error_msg = result.error if hasattr(result, 'error') and result.error else "Unknown error"
+            print_error(f"Step {i+1} ({step_desc}) failed: {error_msg}")
+            sys.exit(1)
+
+        steps_completed += 1
+
+        if verbose and hasattr(result, 'affected_ids') and result.affected_ids:
+            err_console.print(f"  [dim]Affected: {', '.join(result.affected_ids[:3])}"
+                              + (f" (+{len(result.affected_ids)-3} more)" if len(result.affected_ids) > 3 else "")
+                              + "[/dim]")
+
     # Output results
-    if failed:
-        err_console.print(f"\n[red]Batch failed at step {path.length}[/red]")
-        sys.exit(1)
-    
     if verbose:
         print_graph_summary(current, title="Result Graph")
-    
-    print_success(f"Batch completed: {path.success_count}/{path.length} steps succeeded")
-    
-    if current:
-        save_graph(current, output)
-        if output:
-            print_success(f"Result graph written to {output}")
+
+    print_success(f"Batch completed: {steps_completed}/{len(steps)} steps succeeded")
+
+    save_graph(current, output)
+    if output:
+        print_success(f"Result graph written to {output}")
+
+
+def _execute_primitive(graph, step: TransformStep):
+    """Execute a primitive step."""
+    try:
+        prim_type = resolve_primitive(step.name)
+    except ValueError as e:
+        raise ValueError(str(e))
+
+    prim_dict = {"primitive": prim_type, **step.params}
+
+    try:
+        prim = primitive_from_dict(prim_dict)
+    except (KeyError, ValueError) as e:
+        raise ValueError(f"Invalid primitive parameters: {e}")
+
+    return prim.execute(graph)
+
+
+def _execute_composition(graph, step: TransformStep):
+    """Execute a composition step."""
+    try:
+        comp_type = resolve_composition(step.name)
+    except ValueError as e:
+        raise ValueError(str(e))
+
+    comp = CompositionRegistry.create(comp_type, **step.params)
+    if comp is None:
+        raise ValueError(f"Failed to create composition '{comp_type}'")
+
+    return comp.execute(graph)

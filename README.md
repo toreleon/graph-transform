@@ -1,6 +1,28 @@
 # Graph Transformation Engine
 
-Algebraic graph rewriting (DPO/SPO) with pre/post invariant checking for verifying and applying refactoring operators on code graphs.
+Algebraic graph rewriting (DPO/SPO) with pre/post invariant checking for verifying and applying refactoring operations on code graphs.
+
+## The Three-Primitive System
+
+All code transformations reduce to three atomic operations:
+
+| Primitive | Description |
+|-----------|-------------|
+| **INSERT** | Add a node or edge to the graph |
+| **DELETE** | Remove a node or edge from the graph |
+| **UPDATE** | Modify a property of an existing element |
+
+These primitives compose into higher-level refactoring operations:
+
+| Composition | Description |
+|-------------|-------------|
+| **RENAME** | Rename an entity and update all references |
+| **MOVE** | Move an entity from one scope to another |
+| **EXTRACT** | Extract code into a new entity |
+| **INLINE** | Inline an entity into its call sites |
+| **ADD_GUARD** | Add a guard/check before an operation |
+| **CHANGE_SIGNATURE** | Change a callable's signature and update call sites |
+| **WRAP** | Wrap code in a construct (try/catch, with, etc.) |
 
 ## Installation
 
@@ -17,8 +39,9 @@ uv sync --all-extras
 ## CLI Quick Start
 
 ```bash
-# List all 41 refactoring operators
-graph-transform list
+# List available primitives and compositions
+graph-transform list --primitives
+graph-transform list --compositions
 
 # Build a graph from Python source
 graph-transform build src/ -o graph.json -v
@@ -26,16 +49,21 @@ graph-transform build src/ -o graph.json -v
 # Check invariants on a graph
 graph-transform verify graph.json
 
-# Apply a refactoring operator
+# Apply a primitive
 graph-transform apply graph.json \
-  -op add_method \
-  -p '{"class_name":"MyClass","method_name":"new_helper"}' \
+  --primitive insert_node \
+  -p '{"node_id":"func:helper","node_kind":"callable","attrs":{"name":"helper"}}'
+
+# Apply a composition
+graph-transform apply graph.json \
+  --composition RENAME \
+  -p '{"target":"func:old","new_name":"new_name"}' \
   -o result.json
 
 # Preview changes without applying (dry-run)
 graph-transform dry-run graph.json \
-  -op rename_class \
-  -p '{"old_name":"Foo","new_name":"Bar"}'
+  --composition RENAME \
+  -p '{"target":"func:foo","new_name":"bar"}'
 
 # Visualize the graph as SVG
 graph-transform visualize graph.json -o diagram
@@ -58,80 +86,103 @@ graph-transform build . -o g.json -v          # Verbose: show summary
 
 ### `graph-transform list`
 
-List all available refactoring operators.
+List available primitives and compositions.
 
 ```bash
-graph-transform list [--category <cat>] [--json]
+graph-transform list [--primitives] [--compositions] [--json]
 
-# Examples  
-graph-transform list                   # Show all operators
-graph-transform list --category method # Only method operators
-graph-transform list --json            # Machine-readable output
+# Examples
+graph-transform list --primitives     # Show all primitives
+graph-transform list --compositions   # Show all compositions
+graph-transform list --json           # Machine-readable output
 ```
 
 ### `graph-transform apply`
 
-Apply a refactoring operator to a graph.
+Apply a primitive or composition to a graph.
 
 ```bash
-graph-transform apply <graph.json> -op <operator> -p '<params>' [options]
+graph-transform apply <graph.json> [options]
 
 # Options
-  -op, --operator   Operator name (e.g. add_method, rename_class)
-  -p, --params      JSON string of operator parameters
-  -m, --mode        Rewriting mode: dpo (default) or spo
-  -o, --output      Output file (default: stdout)
-  --no-invariants   Skip invariant checking
-  -v, --verbose     Show detailed output
-  --json            Output full result as JSON
+  --primitive, -prim   Primitive to apply (insert_node, delete_node, update, etc.)
+  --composition, -comp Composition to apply (RENAME, MOVE, EXTRACT, etc.)
+  -p, --params         JSON string of parameters
+  -m, --mode           Rewriting mode: dpo (default) or spo
+  -o, --output         Output file (default: stdout)
+  --no-invariants      Skip invariant checking
+  -v, --verbose        Show detailed output
+  --json               Output full result as JSON
 
 # Examples
-graph-transform apply g.json -op add_class -p '{"class_name":"Helper"}' -o g2.json
-graph-transform apply g.json -op remove_class -p '{"class_name":"Old"}' -m spo
+graph-transform apply g.json --primitive insert_node \
+  -p '{"node_id":"func:helper","node_kind":"callable","attrs":{"name":"helper"}}' \
+  -o g2.json
+
+graph-transform apply g.json --composition RENAME \
+  -p '{"target":"func:old","new_name":"new_name"}' \
+  -o g2.json
 ```
 
 ### `graph-transform batch`
 
-Apply multiple operators in sequence (operator chains).
+Apply multiple operations in sequence.
 
 ```bash
 graph-transform batch <graph.json> -f <refactor.yaml> -o result.json
-graph-transform batch <graph.json> -op <op1> -p '<p1>' -op <op2> -p '<p2>' -o result.json
 
 # Options
-  -f, --file         YAML file defining steps
-  -op, --operator    Operator name (repeatable)
-  -p, --params       JSON params for each operator
-  --check-per-step   Run invariants after each step (default: only at end)
-  -v, --verbose      Show detailed output
+  -f, --file           YAML file defining steps
+  --check-per-step     Run invariants after each step (default: only at end)
+  -v, --verbose        Show detailed output
 ```
 
 **YAML file format** (`refactor.yaml`):
 ```yaml
-description: "Add logging parameter"
+description: "Refactoring example"
 steps:
-  - op: add_param
+  - primitive: insert_node
     params:
-      function_name: get_group_vars
-      param_name: logging
-      default_value: "True"
-      
-  - op: add_arg
+      node_id: "func:helper"
+      node_kind: callable
+      attrs:
+        name: helper
+        file: utils.py
+        line: 10
+
+  - composition: RENAME
     params:
-      callee: get_group_vars
-      arg_name: logging
-      arg_value: "True"
-    repeat: all  # Apply to all matching call sites
+      target: "func:old"
+      new_name: "new_name"
 ```
 
-Check if an operator is applicable without modifying the graph.
+### `graph-transform dry-run`
+
+Check if an operation is applicable without modifying the graph.
 
 ```bash
-graph-transform dry-run <graph.json> -op <operator> -p '<params>'
+graph-transform dry-run <graph.json> --primitive <name> -p '<params>'
+graph-transform dry-run <graph.json> --composition <name> -p '<params>'
 
 # Example
-graph-transform dry-run g.json -op rename_method \
-  -p '{"old_name":"foo","new_name":"bar"}'
+graph-transform dry-run g.json --composition RENAME \
+  -p '{"target":"func:foo","new_name":"bar"}'
+```
+
+### `graph-transform plan`
+
+Generate a refactoring edit plan from source code and transformations.
+
+```bash
+graph-transform plan <source> [options]
+
+# Examples
+graph-transform plan src/ -F refactor.yaml -o plan.json
+
+graph-transform plan src/ \
+  --primitive insert_node -p '{"node_id":"func:new","node_kind":"callable","attrs":{"name":"new"}}' \
+  --composition RENAME -p '{"target":"func:old","new_name":"new_name"}' \
+  -o plan.json
 ```
 
 ### `graph-transform verify`
@@ -157,24 +208,45 @@ graph-transform visualize g.json -o diagram          # SVG (default)
 graph-transform visualize g.json -o diagram -f png   # PNG
 ```
 
-## Supported Operators (41)
+## Primitives
 
-| Category | Operators |
-|----------|-----------|
-| **Method** (9) | `add_method`, `remove_method`, `rename_method`, `move_method`, `extract_method`, `inline_method`, `pull_up_method`, `push_down_method`, `change_signature` |
-| **Field** (7) | `add_field`, `remove_field`, `rename_field`, `move_field`, `pull_up_field`, `push_down_field`, `encapsulate_field` |
-| **Class** (7) | `add_class`, `remove_class`, `rename_class`, `move_class`, `extract_class`, `inline_class`, `extract_superclass` |
-| **Parameter** (4) | `add_param`, `remove_param`, `rename_param`, `introduce_param_object` |
-| **Module** (5) | `create_module`, `delete_module`, `rename_module`, `move_to_module`, `merge_modules` |
-| **Reference** (5) | `add_import`, `remove_import`, `update_import`, `update_call`, `update_reference` |
-| **Call-Site** (3) | `add_arg`, `remove_arg`, `update_arg` |
+### INSERT Primitives
+
+| Primitive | Description |
+|-----------|-------------|
+| `insert_node` | Add a new node (function, class, variable, etc.) |
+| `insert_edge` | Add a new edge (containment, calls, inherits, etc.) |
+
+### DELETE Primitives
+
+| Primitive | Description |
+|-----------|-------------|
+| `delete_node` | Remove a node (with optional cascade) |
+| `delete_edge` | Remove an edge |
+
+### UPDATE Primitive
+
+| Primitive | Description |
+|-----------|-------------|
+| `update` | Modify properties of a node or edge |
+
+### Node Kinds
+
+`callable`, `type`, `binding`, `container`, `reference`, `call`, `access`, `block`, `branch`, `loop`, `literal`, `expression`, `argument`, `annotation`
+
+### Edge Kinds
+
+`contains`, `defines`, `references`, `calls`, `accesses`, `imports`, `inherits`, `implements`, `type_of`, `flows_to`, `depends_on`, `has_parameter`, `has_argument`, `binds_to`
 
 ## Python API
 
 ```python
 from graph_transform import (
     TypedGraph, GraphNode, GraphEdge,
-    NodeType, EdgeType, OperatorType,
+    NodeType, EdgeType,
+    insert_node, insert_edge, delete_node, update,
+    NodeKind, EdgeKind,
+    CompositionRegistry,
     create_engine,
 )
 
@@ -184,14 +256,18 @@ graph.add_node(GraphNode("class:MyClass", NodeType.CLASS, {"name": "MyClass"}))
 graph.add_node(GraphNode("func:do_work", NodeType.FUNCTION, {"name": "do_work"}))
 graph.add_edge(GraphEdge("class:MyClass", "func:do_work", EdgeType.CONTAINS_METHOD))
 
-# Create engine and apply a rule
-engine = create_engine(mode="dpo", check_invariants=True)
-rule = engine.catalog.create_rule(OperatorType.ADD_METHOD, {
-    "class_name": "MyClass",
-    "method_name": "new_helper",
-})
-result = engine.apply_rule(rule, graph)
+# Use primitives directly
+result = insert_node(
+    "func:helper",
+    NodeKind.CALLABLE,
+    {"name": "helper", "file": "utils.py", "line": 10},
+).execute(graph)
 print(f"Success: {result.success}")
+
+# Use compositions
+rename = CompositionRegistry.create("RENAME", target="func:do_work", new_name="process")
+result = rename.execute(graph)
+print(f"Renamed: {result.success}")
 ```
 
 ### Build from Source

@@ -15,40 +15,90 @@ from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from graph_transform.core.typed_graph import EdgeType, NodeType, TypedGraph
-from graph_transform.operators.primitive_operators import OperatorType
+from graph_transform.core.typed_graph import NodeType, TypedGraph
 from graph_transform.rewriting.invariants import InvariantSeverity, InvariantViolation
-from graph_transform.rewriting.production_rule import RewriteResult
 
 console = Console()
 err_console = Console(stderr=True)
 
 
 # =============================================================================
-# Operator listing
+# Primitive and Composition listing
 # =============================================================================
 
 
-def print_operator_table(
-    operators: list[OperatorType],
-    descriptions: dict[OperatorType, str],
-    category: str = "",
+def print_primitives_table(
+    primitives: list[str],
+    descriptions: dict[str, str],
 ) -> None:
-    """Print a Rich table of operators."""
+    """Print a Rich table of primitives."""
     table = Table(
-        title=f"Operators: {category}" if category else "All Operators",
+        title="Primitives",
         show_header=True,
         header_style="bold cyan",
         border_style="dim",
     )
-    table.add_column("Operator", style="bold white", min_width=25)
-    table.add_column("Category", style="yellow", min_width=12)
+    table.add_column("Primitive", style="bold white", min_width=15)
     table.add_column("Description", style="white")
 
-    for op in operators:
-        cat = _operator_category(op)
-        desc = descriptions.get(op, "")
-        table.add_row(op.value, cat, desc)
+    for prim in primitives:
+        desc = descriptions.get(prim, "")
+        table.add_row(prim, desc)
+
+    console.print(table)
+
+
+def print_compositions_table(
+    compositions: list[str],
+    descriptions: dict[str, str],
+) -> None:
+    """Print a Rich table of compositions."""
+    table = Table(
+        title="Compositions",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("Composition", style="bold white", min_width=18)
+    table.add_column("Description", style="white")
+
+    for comp in compositions:
+        desc = descriptions.get(comp, "")
+        table.add_row(comp, desc)
+
+    console.print(table)
+
+
+def print_primitive_params(name: str, params: dict[str, str]) -> None:
+    """Print parameters for a primitive."""
+    table = Table(
+        title=f"Parameters: {name}",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("Parameter", style="bold yellow", min_width=15)
+    table.add_column("Description", style="white")
+
+    for param, desc in params.items():
+        table.add_row(param, desc)
+
+    console.print(table)
+
+
+def print_composition_params(name: str, params: dict[str, str]) -> None:
+    """Print parameters for a composition."""
+    table = Table(
+        title=f"Parameters: {name}",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("Parameter", style="bold yellow", min_width=20)
+    table.add_column("Description", style="white")
+
+    for param, desc in params.items():
+        table.add_row(param, desc)
 
     console.print(table)
 
@@ -86,28 +136,71 @@ def print_graph_summary(graph: TypedGraph, title: str = "Graph Summary") -> None
 
 
 # =============================================================================
-# Rewrite result
+# Primitive and Composition results
 # =============================================================================
 
 
-def print_rewrite_result(result: RewriteResult, verbose: bool = False) -> None:
-    """Print the result of an apply/dry-run operation."""
+def print_primitive_result(
+    result: Any,  # PrimitiveResult
+    verbose: bool = False,
+) -> None:
+    """Print the result of a primitive operation."""
     if result.success:
-        print_success(f"Rule '{result.rule_name}' applied successfully.")
-        if result.result_graph and verbose:
-            print_graph_summary(result.result_graph, title="Result Graph")
+        print_success(f"Primitive '{result.primitive_kind.value}' executed successfully.")
+        if result.affected_ids and verbose:
+            console.print(f"  Affected IDs: {', '.join(result.affected_ids)}")
+        if result.metadata and verbose:
+            console.print(f"  Metadata: {json.dumps(result.metadata, indent=2)}")
     else:
-        print_error(f"Rule '{result.rule_name}' failed.")
-        for err in result.errors:
-            err_console.print(f"  [red]{err}[/red]")
+        print_error(f"Primitive '{result.primitive_kind.value}' failed.")
+        if result.error:
+            err_console.print(f"  [red]{result.error}[/red]")
 
-    if result.pre_violations and verbose:
-        console.print("\n[bold]Pre-condition violations:[/bold]")
-        print_violations(result.pre_violations)
 
-    if result.post_violations and verbose:
-        console.print("\n[bold]Post-condition violations:[/bold]")
-        print_violations(result.post_violations)
+def print_composition_result(
+    result: Any,  # CompositionResult
+    verbose: bool = False,
+) -> None:
+    """Print the result of a composition operation."""
+    if result.success:
+        print_success(f"Composition '{result.composition_name}' executed successfully.")
+        if verbose:
+            console.print(f"  Primitives executed: {len(result.primitive_results)}")
+            if result.affected_ids:
+                console.print(f"  Affected IDs: {', '.join(result.affected_ids)}")
+    else:
+        print_error(f"Composition '{result.composition_name}' failed.")
+        if result.error:
+            err_console.print(f"  [red]{result.error}[/red]")
+        if result.primitive_results and verbose:
+            console.print(f"  Primitives completed: {len(result.primitive_results)}")
+
+
+def format_primitive_result_json(result: Any) -> dict[str, Any]:
+    """Format a PrimitiveResult as JSON-serializable dict."""
+    return {
+        "success": result.success,
+        "primitive_kind": result.primitive_kind.value,
+        "affected_ids": result.affected_ids,
+        "error": result.error,
+        "metadata": result.metadata,
+    }
+
+
+def format_composition_result_json(result: Any) -> dict[str, Any]:
+    """Format a CompositionResult as JSON-serializable dict."""
+    return {
+        "success": result.success,
+        "composition_name": result.composition_name,
+        "affected_ids": result.affected_ids,
+        "error": result.error,
+        "primitive_count": len(result.primitive_results),
+        "primitives": [
+            format_primitive_result_json(pr)
+            for pr in result.primitive_results
+        ],
+        "metadata": result.metadata,
+    }
 
 
 # =============================================================================
@@ -192,27 +285,3 @@ def print_error(message: str) -> None:
 
 def print_warning(message: str) -> None:
     err_console.print(f"[bold yellow]WARN[/bold yellow] {message}")
-
-
-# =============================================================================
-# Helpers
-# =============================================================================
-
-
-def _operator_category(op: OperatorType) -> str:
-    """Return the category string for an operator."""
-    if op in OperatorType.method_operators():
-        return "method"
-    if op in OperatorType.field_operators():
-        return "field"
-    if op in OperatorType.class_operators():
-        return "class"
-    if op in OperatorType.param_operators():
-        return "param"
-    if op in OperatorType.module_operators():
-        return "module"
-    if op in OperatorType.reference_operators():
-        return "reference"
-    if op in OperatorType.call_site_operators():
-        return "call_site"
-    return "other"

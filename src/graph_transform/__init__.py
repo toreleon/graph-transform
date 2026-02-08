@@ -2,7 +2,7 @@
 Graph Transformation Engine
 
 Algebraic graph rewriting (DPO/SPO) with pre/post invariant checking
-for verifying and applying refactoring operators on code graphs.
+for verifying and applying refactoring operations on code graphs.
 
 Core concepts:
 - TypedGraph: Uniform typed attributed graph for algebraic operations
@@ -11,7 +11,8 @@ Core concepts:
 - PushoutEngine: DPO/SPO pushout construction
 - MatchFinder: VF2-style subgraph isomorphism
 - InvariantRegistry: Pre/post conditions and graph invariants
-- ProductionRuleCatalog: Factory for all 40+ operator rules
+- Primitives: INSERT, DELETE, UPDATE operations
+- Compositions: RENAME, MOVE, EXTRACT, INLINE, etc.
 - GraphTransformationEngine: Main engine combining all components
 """
 
@@ -19,6 +20,49 @@ Core concepts:
 from .core.nodes import ClassNode, FieldNode, ImportNode, ModuleNode
 from .core.morphism import GraphMorphism
 from .core.typed_graph import EdgeType, GraphEdge, GraphNode, NodeType, TypedGraph
+
+# Primitives system
+from .core.primitives import (
+    # Primitive types
+    Primitive,
+    PrimitiveKind,
+    PrimitiveResult,
+    # INSERT operations
+    InsertNode,
+    InsertEdge,
+    insert_node,
+    insert_edge,
+    # DELETE operations
+    DeleteNode,
+    DeleteEdge,
+    delete_node,
+    delete_edge,
+    # UPDATE operation
+    Update,
+    update,
+    # Deserialization
+    primitive_from_dict,
+    # Node/Edge kinds
+    NodeKind,
+    EdgeKind,
+    # Position system
+    Position,
+    EdgePosition,
+    Relation,
+    # Compositions
+    Composition,
+    CompositionResult,
+    CompositionStatus,
+    Rename,
+    Move,
+    Extract,
+    Inline,
+    AddGuard,
+    ChangeSignature,
+    Wrap,
+    CompositionRegistry,
+    CompositionBuilder,
+)
 
 # Algebraic rewriting
 from .rewriting.graph_change import ChangeType, GraphChangeSet
@@ -36,23 +80,9 @@ from .rewriting.invariants import (
     ScopeRule,
 )
 
-# Operators
-from .operators.primitive_operators import (
-    GraphOperator,
-    MatchedSite,
-    MatchError,
-    OperatorAlgebra,
-    OperatorStatus,
-    OperatorType,
-    Pattern,
-    RefactorPlan,
-)
-from .operators.rule_catalog import ProductionRuleCatalog
-
 # Engine
 from .engine.core import (
     GraphTransformationEngine,
-    apply_operator,
     create_engine,
     verify_graph_invariants,
 )
@@ -60,7 +90,15 @@ from .engine.transformation_path import RuleApplication, TransformationPath
 
 # I/O
 from .io.serialization import load_graph, save_graph
-from .io.builder import build_graph_from_source
+from .io.builder import build_graph_from_source, build_graph_from_files
+
+# Language adapters
+from .languages import (
+    LanguageAdapter,
+    LanguageRegistry,
+    EditInstruction,
+    PythonAdapter,
+)
 
 # Visualization (optional -- graphviz must be installed)
 try:
@@ -69,15 +107,41 @@ except ImportError:
     pass
 
 __all__ = [
-    # Primitive operators
-    "OperatorType",
-    "OperatorStatus",
-    "OperatorAlgebra",
-    "Pattern",
-    "MatchedSite",
-    "MatchError",
-    "GraphOperator",
-    "RefactorPlan",
+    # Primitives
+    "Primitive",
+    "PrimitiveKind",
+    "PrimitiveResult",
+    "InsertNode",
+    "InsertEdge",
+    "insert_node",
+    "insert_edge",
+    "DeleteNode",
+    "DeleteEdge",
+    "delete_node",
+    "delete_edge",
+    "Update",
+    "update",
+    "primitive_from_dict",
+    # Node/Edge kinds
+    "NodeKind",
+    "EdgeKind",
+    # Position
+    "Position",
+    "EdgePosition",
+    "Relation",
+    # Compositions
+    "Composition",
+    "CompositionResult",
+    "CompositionStatus",
+    "Rename",
+    "Move",
+    "Extract",
+    "Inline",
+    "AddGuard",
+    "ChangeSignature",
+    "Wrap",
+    "CompositionRegistry",
+    "CompositionBuilder",
     # Nodes
     "ClassNode",
     "FieldNode",
@@ -111,21 +175,24 @@ __all__ = [
     "GraphSchema",
     "EdgeConstraint",
     "ScopeRule",
-    # Rule catalog
-    "ProductionRuleCatalog",
     # Path
     "RuleApplication",
     "TransformationPath",
     # Engine
     "GraphTransformationEngine",
     "create_engine",
-    "apply_operator",
     "verify_graph_invariants",
     # Serialization
     "load_graph",
     "save_graph",
     # Builder
     "build_graph_from_source",
+    "build_graph_from_files",
+    # Language adapters
+    "LanguageAdapter",
+    "LanguageRegistry",
+    "EditInstruction",
+    "PythonAdapter",
     # Visualization (optional)
     "render_graph",
     "diff_nodes",

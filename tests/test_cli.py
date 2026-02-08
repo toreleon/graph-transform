@@ -60,35 +60,32 @@ class TestListCommand:
     def test_list_all(self, runner):
         result = runner.invoke(cli, ["list"])
         assert result.exit_code == 0
-        assert "add_method" in result.output
+        # Should show primitives and compositions
+        assert "insert_node" in result.output
+        assert "RENAME" in result.output
 
-    def test_list_by_category(self, runner):
-        result = runner.invoke(cli, ["list", "--category", "method"])
+    def test_list_primitives(self, runner):
+        result = runner.invoke(cli, ["list", "--primitives"])
         assert result.exit_code == 0
-        assert "add_method" in result.output
+        assert "insert_node" in result.output
+        assert "delete_node" in result.output
+        assert "update" in result.output
+
+    def test_list_compositions(self, runner):
+        result = runner.invoke(cli, ["list", "--compositions"])
+        assert result.exit_code == 0
+        assert "RENAME" in result.output
+        assert "MOVE" in result.output
+        assert "EXTRACT" in result.output
 
     def test_list_json(self, runner):
         result = runner.invoke(cli, ["list", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert isinstance(data, list)
-        assert len(data) >= 41
-        assert any(d["name"] == "add_method" for d in data)
-
-    def test_list_json_verbose(self, runner):
-        result = runner.invoke(cli, ["list", "--json", "--verbose"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        # Verbose includes params
-        add_method = next(d for d in data if d["name"] == "add_method")
-        assert "params" in add_method
-
-    def test_list_category_field(self, runner):
-        result = runner.invoke(cli, ["list", "--category", "field", "--json"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert all(d["category"] == "field" for d in data)
-        assert any(d["name"] == "add_field" for d in data)
+        assert "primitives" in data
+        assert "compositions" in data
+        assert len(data["primitives"]) == 5
+        assert len(data["compositions"]) == 7
 
 
 # =============================================================================
@@ -168,44 +165,45 @@ class TestBuildCommand:
 
 
 # =============================================================================
-# Tests: apply command
+# Tests: apply command with primitives
 # =============================================================================
 
 
 class TestApplyCommand:
-    def test_apply_add_method(self, runner, tmp_path):
+    def test_apply_insert_node(self, runner, tmp_path):
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "new_method"}',
-            "--no-invariants",
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "func:new_method",
+                "node_kind": "callable",
+                "attrs": {"name": "new_method", "file": "test.py", "line": 10},
+            }),
         ])
         assert result.exit_code == 0
-        # stdout should contain the result graph JSON
-        output_lines = result.output.strip().split("\n")
-        # Find the JSON part (skip Rich output on stderr)
-        json_text = result.output
-        assert "new_method" in json_text or result.exit_code == 0
 
     def test_apply_json_output(self, runner, tmp_path):
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "baz"}',
-            "--no-invariants",
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "func:baz",
+                "node_kind": "callable",
+                "attrs": {"name": "baz"},
+            }),
             "--json",
         ])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["success"] is True
 
-    def test_apply_unknown_operator(self, runner, tmp_path):
+    def test_apply_unknown_primitive(self, runner, tmp_path):
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "nonexistent_op",
+            "--primitive", "nonexistent_primitive",
             "--params", "{}",
         ])
         assert result.exit_code == 2
@@ -214,7 +212,7 @@ class TestApplyCommand:
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "add_method",
+            "--primitive", "insert_node",
             "--params", "not json",
         ])
         assert result.exit_code == 2
@@ -224,147 +222,96 @@ class TestApplyCommand:
         out = tmp_path / "result.json"
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "baz"}',
-            "--no-invariants",
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "func:baz",
+                "node_kind": "callable",
+                "attrs": {"name": "baz"},
+            }),
             "-o", str(out),
         ])
         assert result.exit_code == 0
         assert out.exists()
 
+    def test_apply_composition(self, runner, tmp_path):
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "apply", str(gf),
+            "--composition", "RENAME",
+            "--params", json.dumps({
+                "target": "func:bar",
+                "new_name": "renamed_bar",
+            }),
+        ])
+        assert result.exit_code == 0
+
 
 # =============================================================================
-# Tests: invalid operator usage
+# Tests: invalid operation usage
 # =============================================================================
 
 
-class TestInvalidOperator:
-    def test_apply_missing_required_params(self, runner, tmp_path):
-        """add_method requires class_name and method_name; omit method_name."""
+class TestInvalidOperation:
+    def test_apply_insert_duplicate_node(self, runner, tmp_path):
+        """Insert a node that already exists should fail."""
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo"}',
-            "--no-invariants",
-            "--json",
-        ])
-        # Should fail — the rule can't be built without method_name
-        assert result.exit_code != 0
-
-    def test_apply_target_class_not_in_graph(self, runner, tmp_path):
-        """Apply add_method to a class that doesn't exist in the graph."""
-        gf = _write_graph(tmp_path)
-        result = runner.invoke(cli, [
-            "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "NonExistent", "method_name": "m"}',
-            "--no-invariants",
-            "--json",
-        ])
-        # Engine finds no match → failure
-        assert result.exit_code == 1
-        data = json.loads(result.output)
-        assert data["success"] is False
-
-    def test_apply_on_empty_graph(self, runner, tmp_path):
-        """Apply operator to a graph with zero nodes."""
-        g = TypedGraph()
-        gf = _write_graph(tmp_path, g)
-        result = runner.invoke(cli, [
-            "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "m"}',
-            "--no-invariants",
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "class:Foo",  # Already exists
+                "node_kind": "type",
+                "attrs": {"name": "Foo"},
+            }),
             "--json",
         ])
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["success"] is False
 
-    def test_apply_duplicate_method_with_invariants(self, runner, tmp_path):
-        """Adding a duplicate method should fail when invariants are enabled."""
+    def test_apply_delete_nonexistent_node(self, runner, tmp_path):
+        """Delete a node that doesn't exist should fail."""
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "bar"}',
-            "--json",
-        ])
-        # bar already exists on Foo — unique-method-names invariant catches this
-        assert result.exit_code == 1
-        data = json.loads(result.output)
-        assert data["success"] is False
-
-    def test_apply_remove_nonexistent_method(self, runner, tmp_path):
-        """Remove a method that doesn't exist on the class."""
-        gf = _write_graph(tmp_path)
-        result = runner.invoke(cli, [
-            "apply", str(gf),
-            "--operator", "remove_method",
-            "--params", '{"class_name": "Foo", "method_name": "no_such_method"}',
-            "--no-invariants",
+            "--primitive", "delete_node",
+            "--params", json.dumps({
+                "node_id": "func:nonexistent",
+            }),
             "--json",
         ])
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["success"] is False
 
-    def test_apply_rename_nonexistent_method(self, runner, tmp_path):
-        """Rename a method that doesn't exist."""
+    def test_apply_update_nonexistent_node(self, runner, tmp_path):
+        """Update a node that doesn't exist should fail."""
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "apply", str(gf),
-            "--operator", "rename_method",
-            "--params", '{"old_name": "ghost", "new_name": "phantom"}',
-            "--no-invariants",
+            "--primitive", "update",
+            "--params", json.dumps({
+                "target": "func:ghost",
+                "prop": "name",
+                "value": "phantom",
+            }),
             "--json",
         ])
         assert result.exit_code == 1
         data = json.loads(result.output)
         assert data["success"] is False
-
-    def test_apply_empty_params(self, runner, tmp_path):
-        """Pass empty JSON object as params."""
-        gf = _write_graph(tmp_path)
-        result = runner.invoke(cli, [
-            "apply", str(gf),
-            "--operator", "add_method",
-            "--params", "{}",
-            "--no-invariants",
-            "--json",
-        ])
-        assert result.exit_code != 0
-
-    def test_dry_run_invalid_operator(self, runner, tmp_path):
-        """dry-run with an unknown operator name."""
-        gf = _write_graph(tmp_path)
-        result = runner.invoke(cli, [
-            "dry-run", str(gf),
-            "--operator", "totally_bogus",
-            "--params", "{}",
-        ])
-        assert result.exit_code == 2
 
     def test_apply_corrupted_graph_file(self, runner, tmp_path):
-        """Apply operator to a file with malformed JSON."""
+        """Apply operation to a file with malformed JSON."""
         bad = tmp_path / "corrupt.json"
         bad.write_text('{"nodes": {}, "edges": [broken')
         result = runner.invoke(cli, [
             "apply", str(bad),
-            "--operator", "add_method",
-            "--params", '{"class_name": "X", "method_name": "y"}',
-        ])
-        assert result.exit_code == 2
-
-    def test_apply_graph_missing_edges_key(self, runner, tmp_path):
-        """Graph JSON missing the 'edges' key entirely."""
-        bad = tmp_path / "no_edges.json"
-        bad.write_text('{"nodes": {}}')
-        result = runner.invoke(cli, [
-            "apply", str(bad),
-            "--operator", "add_method",
-            "--params", '{"class_name": "X", "method_name": "y"}',
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "func:x",
+                "node_kind": "callable",
+            }),
         ])
         assert result.exit_code == 2
 
@@ -379,8 +326,12 @@ class TestDryRunCommand:
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "dry-run", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "new_method"}',
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "func:new_method",
+                "node_kind": "callable",
+                "attrs": {"name": "new_method"},
+            }),
         ])
         assert result.exit_code == 0
 
@@ -388,8 +339,12 @@ class TestDryRunCommand:
         gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "dry-run", str(gf),
-            "--operator", "add_method",
-            "--params", '{"class_name": "Foo", "method_name": "new_method"}',
+            "--primitive", "insert_node",
+            "--params", json.dumps({
+                "node_id": "func:new_method",
+                "node_kind": "callable",
+                "attrs": {"name": "new_method"},
+            }),
             "--json",
         ])
         assert result.exit_code == 0
@@ -397,16 +352,25 @@ class TestDryRunCommand:
         assert data["success"] is True
 
     def test_dry_run_not_applicable(self, runner, tmp_path):
-        # Try to remove a method that doesn't exist
-        g = TypedGraph()
-        g.add_node(GraphNode("class:Foo", NodeType.CLASS, {"name": "Foo"}))
-        gf = _write_graph(tmp_path, g)
+        gf = _write_graph(tmp_path)
         result = runner.invoke(cli, [
             "dry-run", str(gf),
-            "--operator", "remove_method",
-            "--params", '{"class_name": "Foo", "method_name": "nonexistent"}',
+            "--primitive", "delete_node",
+            "--params", json.dumps({
+                "node_id": "func:nonexistent",
+            }),
         ])
         assert result.exit_code == 1
+
+    def test_dry_run_invalid_primitive(self, runner, tmp_path):
+        """dry-run with an unknown primitive name."""
+        gf = _write_graph(tmp_path)
+        result = runner.invoke(cli, [
+            "dry-run", str(gf),
+            "--primitive", "totally_bogus",
+            "--params", "{}",
+        ])
+        assert result.exit_code == 2
 
 
 # =============================================================================

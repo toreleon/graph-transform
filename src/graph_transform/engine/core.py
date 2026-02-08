@@ -5,7 +5,8 @@ Algebraic graph transformation engine combining:
 - Match finding (subgraph isomorphism)
 - DPO/SPO pushout construction (formal rewriting)
 - Pre/post invariant checking (correctness guarantees)
-- Production rule catalog (all 40+ operator types)
+- Primitive operations (INSERT, DELETE, UPDATE)
+- Compositions (RENAME, MOVE, EXTRACT, etc.)
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from typing import Any
 
 from graph_transform.core.morphism import GraphMorphism
 from graph_transform.core.typed_graph import TypedGraph
-from graph_transform.operators.rule_catalog import ProductionRuleCatalog
 from graph_transform.rewriting.invariants import (
     InvariantLayer,
     InvariantRegistry,
@@ -40,25 +40,23 @@ class GraphTransformationEngine:
     - Match finding (subgraph isomorphism via VF2 backtracking)
     - DPO/SPO pushout construction (formal rewriting)
     - Pre/post invariant checking (correctness guarantees)
-    - Production rule catalog (all 40+ operator types)
+
+    For higher-level operations, use the primitives system:
+    - graph_transform.core.primitives for INSERT, DELETE, UPDATE
+    - graph_transform.core.primitives.CompositionRegistry for RENAME, MOVE, etc.
 
     Usage:
-        engine = GraphTransformationEngine()
-
-        # Build typed graph from existing CodeGraph
-        tg = TypedGraph.from_code_graph(code_graph)
-
-        # Create a rule
-        rule = engine.catalog.create_rule(
-            OperatorType.ADD_PARAM,
-            {"function_name": "get_data", "param_name": "log", "default_value": "True"}
+        from graph_transform.core.primitives import (
+            insert_node, delete_node, update,
+            CompositionRegistry, NodeKind,
         )
 
-        # Find matches and apply
-        result = engine.apply_rule(rule, tg)
+        # Use primitives directly
+        result = insert_node("func:new", NodeKind.CALLABLE, {"name": "new"}).execute(graph)
 
-        # Or apply entire transformation path
-        path_result = engine.apply_path(path, tg)
+        # Use compositions
+        rename = CompositionRegistry.create("RENAME", target="func:old", new_name="new")
+        result = rename.execute(graph)
     """
 
     def __init__(
@@ -69,7 +67,6 @@ class GraphTransformationEngine:
     ):
         self.mode = mode
         self.invariants = invariants or InvariantRegistry()
-        self.catalog = ProductionRuleCatalog()
         self.check_invariants = check_invariants
         self._pushout = PushoutEngine(mode)
 
@@ -324,18 +321,6 @@ def create_engine(
         mode=RewriteMode(mode),
         check_invariants=check_invariants,
     )
-
-
-def apply_operator(
-    op_type: Any,
-    params: dict[str, Any],
-    graph: TypedGraph,
-    mode: str = "dpo",
-) -> RewriteResult:
-    """One-shot: create rule, find match, apply."""
-    engine = create_engine(mode)
-    rule = engine.catalog.create_rule(op_type, params)
-    return engine.apply_rule(rule, graph)
 
 
 def verify_graph_invariants(

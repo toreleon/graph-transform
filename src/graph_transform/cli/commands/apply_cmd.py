@@ -1,5 +1,5 @@
 """
-apply -- Apply a refactoring operator to a graph.
+apply -- Apply a primitive or composition to a graph.
 """
 
 from __future__ import annotations
@@ -11,33 +11,41 @@ import click
 
 from graph_transform.cli.formatting import (
     err_console,
+    format_composition_result_json,
+    format_primitive_result_json,
+    print_composition_result,
     print_error,
     print_graph_summary,
-    print_rewrite_result,
+    print_primitive_result,
     print_success,
 )
-from graph_transform.cli.operator_metadata import resolve_operator
-from graph_transform.engine.core import create_engine
-from graph_transform.io.serialization import format_result_json, load_graph, save_graph
+from graph_transform.cli.primitive_metadata import (
+    resolve_composition,
+    resolve_primitive,
+)
+from graph_transform.core.primitives import (
+    CompositionRegistry,
+    primitive_from_dict,
+)
+from graph_transform.io.serialization import load_graph, save_graph
 
 
 @click.command("apply")
 @click.argument("graph_file", type=click.Path(exists=True))
 @click.option(
-    "--operator", "-op",
-    required=True,
-    help="Operator name (e.g. add_method, rename_class).",
+    "--primitive", "-prim",
+    default=None,
+    help="Primitive to apply: insert_node, insert_edge, delete_node, delete_edge, update.",
+)
+@click.option(
+    "--composition", "-comp",
+    default=None,
+    help="Composition to apply: RENAME, MOVE, EXTRACT, INLINE, ADD_GUARD, CHANGE_SIGNATURE, WRAP.",
 )
 @click.option(
     "--params", "-p",
     required=True,
-    help="JSON string of operator parameters.",
-)
-@click.option(
-    "--mode", "-m",
-    type=click.Choice(["dpo", "spo"]),
-    default="dpo",
-    help="Rewriting mode (default: dpo).",
+    help="JSON string of parameters.",
 )
 @click.option(
     "--output", "-o",
@@ -45,56 +53,145 @@ from graph_transform.io.serialization import format_result_json, load_graph, sav
     default=None,
     help="Output file for result graph (default: stdout).",
 )
-@click.option(
-    "--no-invariants",
-    is_flag=True,
-    help="Skip invariant checking.",
-)
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output.")
 @click.option("--json", "as_json", is_flag=True, help="Output full result as JSON.")
 def apply_operator(
     graph_file: str,
-    operator: str,
+    primitive: str | None,
+    composition: str | None,
     params: str,
-    mode: str,
     output: str | None,
-    no_invariants: bool,
     verbose: bool,
     as_json: bool,
 ) -> None:
-    """Apply a refactoring operator to a graph."""
-    try:
-        op_type = resolve_operator(operator)
-    except ValueError as e:
-        print_error(str(e))
+    """Apply a primitive or composition to a graph.
+
+    Examples:
+
+        # Apply a primitive
+        graph-transform apply graph.json --primitive insert_node \\
+            -p '{"node_id": "func:new", "node_kind": "callable", "attrs": {"name": "new"}}'
+
+        # Apply a composition
+        graph-transform apply graph.json --composition RENAME \\
+            -p '{"target": "func:old", "new_name": "new_name"}'
+    """
+    # Validate that exactly one of --primitive or --composition is specified
+    if primitive and composition:
+        print_error("Specify either --primitive or --composition, not both.")
         sys.exit(2)
 
+    if not primitive and not composition:
+        print_error("Must specify either --primitive or --composition.")
+        sys.exit(2)
+
+    # Parse parameters
     try:
         params_dict = json.loads(params)
     except json.JSONDecodeError as e:
         print_error(f"Invalid --params JSON: {e}")
         sys.exit(2)
 
+    # Load graph
     try:
         graph = load_graph(graph_file)
     except (FileNotFoundError, ValueError) as e:
         print_error(str(e))
         sys.exit(2)
 
-    engine = create_engine(mode=mode, check_invariants=not no_invariants)
-    rule = engine.catalog.create_rule(op_type, params_dict)
-    result = engine.apply_rule(rule, graph)
+    if primitive:
+        _apply_primitive(
+            graph, primitive, params_dict, output, verbose, as_json
+        )
+    else:
+        _apply_composition(
+            graph, composition, params_dict, output, verbose, as_json
+        )
 
+
+def _apply_primitive(
+    graph,
+    primitive_name: str,
+    params: dict,
+    output: str | None,
+    verbose: bool,
+    as_json: bool,
+) -> None:
+    """Execute a primitive operation."""
+    try:
+        prim_type = resolve_primitive(primitive_name)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(2)
+
+    # Build primitive dict for deserialization
+    prim_dict = {"primitive": prim_type, **params}
+
+    try:
+        prim = primitive_from_dict(prim_dict)
+    except (KeyError, ValueError) as e:
+        print_error(f"Invalid primitive parameters: {e}")
+        sys.exit(2)
+
+    # Execute
+    result = prim.execute(graph)
+
+    # Output
     if as_json:
-        sys.stdout.write(json.dumps(format_result_json(result), indent=2) + "\n")
+        sys.stdout.write(
+            json.dumps(format_primitive_result_json(result), indent=2) + "\n"
+        )
         sys.exit(0 if result.success else 1)
 
-    print_rewrite_result(result, verbose=verbose)
+    print_primitive_result(result, verbose=verbose)
 
-    if result.success and result.result_graph:
+    if result.success:
         if verbose:
-            print_graph_summary(result.result_graph, title="Result Graph")
-        save_graph(result.result_graph, output)
+            print_graph_summary(graph, title="Result Graph")
+        save_graph(graph, output)
+        if output:
+            print_success(f"Result graph written to {output}")
+    else:
+        sys.exit(1)
+
+
+def _apply_composition(
+    graph,
+    composition_name: str,
+    params: dict,
+    output: str | None,
+    verbose: bool,
+    as_json: bool,
+) -> None:
+    """Execute a composition operation."""
+    try:
+        comp_type = resolve_composition(composition_name)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(2)
+
+    # Create composition instance
+    comp = CompositionRegistry.create(comp_type, **params)
+    if comp is None:
+        print_error(f"Failed to create composition '{comp_type}'.")
+        sys.exit(2)
+
+    # Execute
+    result = comp.execute(graph)
+
+    # Output
+    if as_json:
+        sys.stdout.write(
+            json.dumps(format_composition_result_json(result), indent=2) + "\n"
+        )
+        sys.exit(0 if result.success else 1)
+
+    print_composition_result(result, verbose=verbose)
+
+    if result.success:
+        if verbose:
+            print_graph_summary(graph, title="Result Graph")
+        save_graph(graph, output)
         if output:
             print_success(f"Result graph written to {output}")
     else:

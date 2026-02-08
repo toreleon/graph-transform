@@ -2,7 +2,6 @@
 
 from .core import (
     GraphTransformationEngine,
-    apply_operator,
     create_engine,
     verify_graph_invariants,
 )
@@ -12,7 +11,6 @@ __all__ = [
     "GraphTransformationEngine",
     "RuleApplication",
     "TransformationPath",
-    "apply_operator",
     "create_engine",
     "verify_graph_invariants",
 ]

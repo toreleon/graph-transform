@@ -65,6 +65,14 @@ from .compositions import (
     CompositionBuilder,
 )
 
+from .migrations import (
+    # Migration compositions
+    Migrate,
+    MigrateNaming,
+    MigrateTypes,
+    MigrateStructure,
+)
+
 __all__ = [
     # Primitive types
     "Primitive",
@@ -107,4 +115,9 @@ __all__ = [
     "Wrap",
     "CompositionRegistry",
     "CompositionBuilder",
+    # Migration compositions
+    "Migrate",
+    "MigrateNaming",
+    "MigrateTypes",
+    "MigrateStructure",
 ]
