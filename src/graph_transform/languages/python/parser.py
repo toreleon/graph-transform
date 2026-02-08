@@ -37,6 +37,7 @@ class PythonParser:
         graph = TypedGraph()
         builder = _ASTGraphBuilder(filename, graph)
         builder.visit(tree)
+        builder.finalize_exports()  # Create EXPORTS edges after all nodes exist
         return graph
 
     def parse_file(self, file_path: str | Path) -> TypedGraph:
@@ -80,9 +81,11 @@ class _ASTGraphBuilder(ast.NodeVisitor):
         self._current_class: str | None = None
         self._current_func: str | None = None
         self._call_counter = 0
+        self._pending_exports: list[str] = []  # Store __all__ symbols for deferred edge creation
 
         # Add module node
-        mod_name = Path(file_path).stem
+        # Derive dotted module path from file path (e.g., lib/ansible/inventory/manager.py -> ansible.inventory.manager)
+        mod_name = self._derive_module_name(file_path)
         self._module_id = f"module:{mod_name}"
         if not graph.has_node(self._module_id):
             graph.add_node(GraphNode(
@@ -90,6 +93,41 @@ class _ASTGraphBuilder(ast.NodeVisitor):
                 node_type=NodeType.MODULE,
                 attrs={"name": mod_name, "file": file_path},
             ))
+
+    def _derive_module_name(self, file_path: str) -> str:
+        """Derive a dotted module name from a file path.
+
+        Examples:
+            lib/ansible/inventory/manager.py -> ansible.inventory.manager
+            src/requests/utils.py -> requests.utils
+            tornado/netutil.py -> tornado.netutil
+            /tmp/.../mod.py -> mod (temp files use just the stem)
+        """
+        path = Path(file_path)
+        parts = list(path.with_suffix("").parts)
+
+        # For absolute paths in temp directories, just use the stem
+        # This handles pytest tmp_path and similar
+        if path.is_absolute():
+            for i, part in enumerate(parts):
+                if part.startswith("tmp") or part == "tmp":
+                    # It's a temp path, just use the file stem
+                    return path.stem
+
+        # Remove common source directory prefixes
+        prefixes_to_remove = {"lib", "src", "source", "sources"}
+        while parts and parts[0].lower() in prefixes_to_remove:
+            parts = parts[1:]
+
+        # Also remove leading path separators or root
+        while parts and (parts[0] == "" or parts[0] == "/"):
+            parts = parts[1:]
+
+        # If no parts left, use the stem
+        if not parts:
+            return path.stem
+
+        return ".".join(parts)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         cls_id = f"class:{node.name}"
@@ -105,8 +143,9 @@ class _ASTGraphBuilder(ast.NodeVisitor):
             },
         ))
 
-        # Defined in module
+        # Defined in module - add both DEFINED_IN (class -> module) and CONTAINS (module -> class)
         self.graph.add_edge(GraphEdge(cls_id, self._module_id, EdgeType.DEFINED_IN))
+        self.graph.add_edge(GraphEdge(self._module_id, cls_id, EdgeType.CONTAINS))
 
         # Inheritance
         for base in node.bases:
@@ -156,7 +195,9 @@ class _ASTGraphBuilder(ast.NodeVisitor):
             cls_id = f"class:{self._current_class}"
             self.graph.add_edge(GraphEdge(cls_id, func_id, EdgeType.CONTAINS_METHOD))
         else:
+            # Add both DEFINED_IN (func -> module) and CONTAINS (module -> func) for compatibility
             self.graph.add_edge(GraphEdge(func_id, self._module_id, EdgeType.DEFINED_IN))
+            self.graph.add_edge(GraphEdge(self._module_id, func_id, EdgeType.CONTAINS))
 
         # Parameters
         self._add_parameters(func_id, node)
@@ -358,6 +399,52 @@ class _ASTGraphBuilder(ast.NodeVisitor):
             self.graph.add_edge(GraphEdge(
                 self._module_id, imp_id, EdgeType.IMPORTS
             ))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        """Handle assignments, specifically __all__ at module level."""
+        # Only process module-level __all__ assignments
+        if self._current_class is None and self._current_func is None:
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    # Parse __all__ value
+                    all_symbols = self._parse_all_value(node.value)
+                    if all_symbols is not None:
+                        # Store __all__ as module attribute
+                        mod_node = self.graph.get_node(self._module_id)
+                        if mod_node:
+                            mod_node.attrs["__all__"] = all_symbols
+                            mod_node.attrs["__all__line"] = node.lineno
+
+                        # Store symbols for deferred EXPORTS edge creation
+                        # (nodes may not exist yet since __all__ is typically at the top)
+                        self._pending_exports.extend(all_symbols)
+        self.generic_visit(node)
+
+    def finalize_exports(self) -> None:
+        """Create EXPORTS edges for __all__ symbols after all nodes have been added."""
+        for symbol in self._pending_exports:
+            # Look for function or class with this name
+            func_id = f"func:{symbol}"
+            cls_id = f"class:{symbol}"
+            if self.graph.has_node(func_id):
+                self.graph.add_edge(GraphEdge(
+                    self._module_id, func_id, EdgeType.EXPORTS
+                ))
+            elif self.graph.has_node(cls_id):
+                self.graph.add_edge(GraphEdge(
+                    self._module_id, cls_id, EdgeType.EXPORTS
+                ))
+
+    def _parse_all_value(self, node: ast.expr) -> list[str] | None:
+        """Parse the value of an __all__ assignment."""
+        # Handle both list and tuple forms of __all__
+        if isinstance(node, (ast.List, ast.Tuple)):
+            symbols = []
+            for elt in node.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    symbols.append(elt.value)
+            return symbols
+        return None
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = "." * node.level + (node.module or "") if node.level else (node.module or "")

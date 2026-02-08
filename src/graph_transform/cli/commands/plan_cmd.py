@@ -140,12 +140,19 @@ def edits_from_composition_result(
     result: Any,  # CompositionResult
     composition_name: str,
     params: dict[str, Any],
-) -> list[EditInstruction]:
-    """Generate edit instructions from a CompositionResult."""
+    graph: TypedGraph | None = None,
+) -> tuple[list[EditInstruction], list[dict[str, Any]]]:
+    """Generate edit instructions and hints from a CompositionResult.
+
+    Returns:
+        Tuple of (edits, hints) where hints are actionable suggestions
+        for the agent about imports, __all__ updates, etc.
+    """
     edits: list[EditInstruction] = []
+    hints: list[dict[str, Any]] = []
 
     if not result.success:
-        return edits
+        return edits, hints
 
     # Map composition to edit type
     file = params.get("file", "unknown")
@@ -166,16 +173,103 @@ def edits_from_composition_result(
         ))
 
     elif composition_name == "MOVE":
+        target = params.get("target", "")
+        from_scope = params.get("from_scope", "")
+        to_scope = params.get("to_scope", "")
+
+        # Get the node details for generating actionable commands
+        source_file = "unknown"
+        target_file = "unknown"
+        symbol_name = target.split(":")[-1] if ":" in target else target
+        start_line = None
+        end_line = None
+        from_module = ""
+        to_module = ""
+
+        if graph:
+            # Get source file from from_scope module
+            from_node = graph.get_node(from_scope)
+            if from_node:
+                source_file = from_node.attrs.get("file", "unknown")
+                from_module = from_node.attrs.get("name", "")
+
+            # Get target file from to_scope module
+            to_node = graph.get_node(to_scope)
+            if to_node:
+                target_file = to_node.attrs.get("file", "unknown")
+                to_module = to_node.attrs.get("name", "")
+
+            # Get the actual symbol name and line numbers
+            target_node = graph.get_node(target)
+            if target_node:
+                symbol_name = target_node.attrs.get("name", symbol_name)
+                start_line = target_node.attrs.get("line")
+                end_line = target_node.attrs.get("end_line")
+
+        # Generate commands list for this MOVE
+        move_commands = []
+        if source_file != "unknown" and target_file != "unknown" and start_line:
+            # Command 1: Extract the function definition and append to target
+            if end_line:
+                move_commands.append(
+                    f"sed -n '{start_line},{end_line}p' {source_file} >> {target_file}"
+                )
+                # Command 2: Delete the function from source
+                move_commands.append(
+                    f"sed -i '{start_line},{end_line}d' {source_file}"
+                )
+            else:
+                # Fallback: just provide line info for manual extraction
+                move_commands.append(
+                    f"# Extract function '{symbol_name}' starting at line {start_line} from {source_file} to {target_file}"
+                )
+
+        # Command 3: Update imports
+        if from_module and to_module:
+            move_commands.append(
+                f"find . -name '*.py' -exec sed -i 's/from {from_module} import {symbol_name}/from {to_module} import {symbol_name}/g' {{}} \\;"
+            )
+
+        # Command 4: Add to __all__ in target file (for Python exports)
+        # Check if the symbol was exported (in __all__) in the source module
+        # We check the module's __all__ attribute instead of edges since edges may have changed after MOVE
+        is_exported = False
+        if graph:
+            from_node = graph.get_node(from_scope)
+            if from_node:
+                all_exports = from_node.attrs.get("__all__", [])
+                is_exported = symbol_name in all_exports
+
+        if is_exported and target_file != "unknown":
+            # Add __all__ declaration with the symbol to target file
+            # First check if file exists and has __all__, if not prepend it
+            move_commands.append(
+                f"grep -q '^__all__' {target_file} 2>/dev/null || sed -i \"1i\\\\__all__ = ('{symbol_name}')\" {target_file}"
+            )
+
         edits.append(EditInstruction(
             edit_type="move",
-            file=file,
-            line=line,
+            file=source_file,
+            line=start_line,
             details={
-                "target": params.get("target"),
-                "from_scope": params.get("from_scope"),
-                "to_scope": params.get("to_scope"),
+                "target": target,
+                "symbol_name": symbol_name,
+                "from_scope": from_scope,
+                "to_scope": to_scope,
+                "source_file": source_file,
+                "target_file": target_file,
+                "start_line": start_line,
+                "end_line": end_line,
+                "from_module": from_module,
+                "to_module": to_module,
+                "command": move_commands[0] if move_commands else None,  # Primary command
+                "commands": move_commands,  # All commands
             },
         ))
+
+        # Generate hints about imports and __all__ that need updating
+        if graph:
+            hints.extend(_generate_move_hints(graph, target, from_scope, to_scope))
 
     elif composition_name == "EXTRACT":
         edits.append(EditInstruction(
@@ -234,7 +328,113 @@ def edits_from_composition_result(
             },
         ))
 
-    return edits
+    elif composition_name == "UPDATE_IMPORT":
+        symbol = params.get("symbol", "")
+        old_module = params.get("old_module", "")
+        new_module = params.get("new_module", "")
+
+        # Generate sed command to update imports in all files
+        # Handles both: from X.Y import Z  and  from X import Y
+        edits.append(EditInstruction(
+            edit_type="update_import",
+            file="*",  # All files
+            line=None,
+            details={
+                "symbol": symbol,
+                "old_module": old_module,
+                "new_module": new_module,
+                "command": f"find . -name '*.py' -exec sed -i 's/from {old_module} import {symbol}/from {new_module} import {symbol}/g' {{}} \\;",
+            },
+        ))
+
+    return edits, hints
+
+
+def _generate_move_hints(
+    graph: TypedGraph,
+    target: str,
+    from_scope: str,
+    to_scope: str,
+) -> list[dict[str, Any]]:
+    """Generate hints about imports and __all__ updates needed for a MOVE.
+
+    When moving a symbol from one module to another, this function identifies:
+    1. All files that import the symbol (need import path updates)
+    2. __all__ declarations that need updating
+    """
+    hints: list[dict[str, Any]] = []
+
+    # Get the moved node's name
+    node = graph.get_node(target)
+    if not node:
+        return hints
+
+    symbol_name = node.attrs.get("name", "")
+    if not symbol_name:
+        return hints
+
+    # Get source and target module info
+    from_node = graph.get_node(from_scope)
+    to_node = graph.get_node(to_scope)
+
+    from_module = from_node.attrs.get("name", "") if from_node else ""
+    to_module = to_node.attrs.get("name", "") if to_node else ""
+    from_file = from_node.attrs.get("file", "") if from_node else ""
+    to_file = to_node.attrs.get("file", "") if to_node else ""
+
+    # Find all import nodes that reference this symbol
+    import_files: list[dict[str, Any]] = []
+    for node_id, imp_node in graph.nodes.items():
+        if not node_id.startswith("import:"):
+            continue
+
+        imp_name = imp_node.attrs.get("name", "")
+        imp_module = imp_node.attrs.get("module", "")
+        imp_file = imp_node.attrs.get("file", "")
+
+        # Check if this import brings in our symbol
+        if imp_name == symbol_name:
+            # Check if it's from the source module
+            if from_module and from_module in imp_module:
+                import_files.append({
+                    "file": imp_file,
+                    "line": imp_node.attrs.get("line"),
+                    "current_import": f"from {imp_module} import {imp_name}",
+                    "new_import": f"from {to_module} import {imp_name}" if to_module else None,
+                })
+
+    if import_files:
+        hints.append({
+            "type": "update_imports",
+            "symbol": symbol_name,
+            "from_module": from_module,
+            "to_module": to_module,
+            "files": import_files,
+            "message": f"Update imports of '{symbol_name}' from '{from_module}' to '{to_module}' in {len(import_files)} file(s)",
+        })
+
+    # Check if symbol is exported (has EXPORTS edge from source module)
+    # This is language-agnostic: Python uses __all__, JS/TS uses export, Rust uses pub, etc.
+    from graph_transform.core.typed_graph import EdgeType
+    is_exported = False
+    for edge in graph.get_edges_to(target):
+        if edge.edge_type == EdgeType.EXPORTS and edge.source == from_scope:
+            is_exported = True
+            break
+
+    # Hint about export declaration updates if symbol is exported
+    if is_exported and (from_file or to_file):
+        hints.append({
+            "type": "update_exports",
+            "symbol": symbol_name,
+            "from_scope": from_scope,
+            "to_scope": to_scope,
+            "from_file": from_file,
+            "to_file": to_file,
+            "message": f"Update exports: remove '{symbol_name}' from {from_file} exports, add to {to_file} exports",
+        })
+
+    return hints
 
 
 # =============================================================================
@@ -433,11 +633,13 @@ def plan(
     # Phase 3: Apply transformations and collect edits
     current = graph
     step_results: list[dict[str, Any]] = []
+    all_hints: list[dict[str, Any]] = []
     pipeline_error: str | None = None
 
     for i, step in enumerate(steps):
         step_desc = f"{step.step_type}:{step.name}"
         all_edits: list[EditInstruction] = []
+        step_hints: list[dict[str, Any]] = []
 
         try:
             if step.step_type == "primitive":
@@ -468,7 +670,10 @@ def plan(
                     print_error(pipeline_error)
                     break
 
-                all_edits = edits_from_composition_result(result, step.name, step.params)
+                all_edits, step_hints = edits_from_composition_result(
+                    result, step.name, step.params, graph=current
+                )
+                all_hints.extend(step_hints)
 
         except Exception as e:
             pipeline_error = f"Step {i+1} ({step_desc}): {e}"
@@ -483,6 +688,8 @@ def plan(
             "params": step.params,
             "edits": [e.to_dict() for e in all_edits],
         }
+        if step_hints:
+            step_result["hints"] = step_hints
         step_results.append(step_result)
 
         if verbose:
@@ -493,13 +700,32 @@ def plan(
     # Phase 4: Output
     total_edits = sum(len(s["edits"]) for s in step_results)
 
+    # Extract all commands from edits for easy execution
+    commands: list[str] = []
+    for step in step_results:
+        for edit in step.get("edits", []):
+            # Handle single command
+            if "command" in edit and edit["command"]:
+                commands.append(edit["command"])
+            # Handle multiple commands (e.g., from MOVE)
+            if "commands" in edit:
+                for cmd in edit["commands"]:
+                    if cmd and not cmd.startswith("#"):  # Skip comments
+                        commands.append(cmd)
+
     output_data: dict[str, Any] = {
         "steps": step_results,
+        "commands": commands,  # Direct list of sed/find commands to execute
         "summary": {
             "total_steps": len(step_results),
             "total_edits": total_edits,
+            "total_commands": len(commands),
         },
     }
+
+    # Add hints at top level if any were generated
+    if all_hints:
+        output_data["hints"] = all_hints
 
     if pipeline_error:
         output_data["error"] = pipeline_error

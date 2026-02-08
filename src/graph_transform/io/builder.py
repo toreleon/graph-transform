@@ -149,5 +149,9 @@ def _merge_graph(target: TypedGraph, source: TypedGraph) -> None:
             target.add_node(node)
 
     for edge in source.edges:
-        if not target.has_edge(edge.source, edge.target):
+        # Check for exact edge match (same source, target, AND type)
+        existing = [e for e in target.edges
+                    if e.source == edge.source and e.target == edge.target
+                    and e.edge_type == edge.edge_type]
+        if not existing:
             target.add_edge(edge)
