@@ -21,6 +21,7 @@ dev = [
     "pytest-cov",
 ]
 viz = ["graphviz>=0.20"]
+mcp = ["mcp>=1.9.0,<2"]
 
 [project.scripts]
 graph-transform = "graph_transform.cli:main"
