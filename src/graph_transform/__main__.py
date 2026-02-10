@@ -1,5 +1,8 @@
-"""Allow: python -m graph_transform"""
+"""Allow: python -m graph_transform
 
-from graph_transform.cli import main
+Starts the MCP server for AI coding agents.
+"""
+
+from graph_transform.mcp.__main__ import main
 
 main()
