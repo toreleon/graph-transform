@@ -7,12 +7,12 @@
 - [x] 1.4: Spec Tool with Examples and LLM Documentation
 
 ## Epic 2: Codebase Query & Graph Model
-- [ ] 2.1: TypedGraph with Node and Edge Model
-- [ ] 2.2: Python Parser - Functions and Classes
-- [ ] 2.3: Python Parser - Parameters and Semantic Edges
-- [ ] 2.4: Query Tool - Pattern Matching
-- [ ] 2.5: Query Tool - Kind and File Filtering
-- [ ] 2.6: Query Tool - Complete Result Format
+- [x] 2.1: TypedGraph with Node and Edge Model
+- [x] 2.2: Python Parser - Functions and Classes
+- [x] 2.3: Python Parser - Parameters and Semantic Edges
+- [x] 2.4: Query Tool - Pattern Matching
+- [x] 2.5: Query Tool - Kind and File Filtering
+- [x] 2.6: Query Tool - Complete Result Format
 
 ## Epic 3: Transformation Primitives & Reference Tracking
 - [ ] 3.1: INSERT Primitive
@@ -58,12 +58,12 @@
 
 ## Summary
 - **Total Stories:** 42
-- **Completed:** 4
+- **Completed:** 10
 - **In Progress:** 0
-- **Remaining:** 38
+- **Remaining:** 32
 
 ## Current Focus
-**Epic 1 COMPLETE**
+**Epic 2 COMPLETE**
 
 ## Recent Commits
 (updated by Ralph Loop)

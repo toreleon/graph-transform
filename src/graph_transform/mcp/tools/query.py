@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from graph_transform.io.builder import build_graph_from_source as build_graph
-from graph_transform.core.typed_graph import TypedGraph
-from graph_transform.core.primitives.node_kinds import NodeKind
+from graph_transform.core.typed_graph import NodeType, TypedGraph
 
 
 def query_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -86,7 +85,7 @@ def _filter_nodes(
     for node_id, node in graph.nodes.items():
         # Kind filter
         if kind:
-            kind_match = _match_kind(node.kind, kind)
+            kind_match = _match_kind(node.node_type, kind)
             if not kind_match:
                 continue
 
@@ -104,7 +103,7 @@ def _filter_nodes(
 
         results.append({
             "id": node_id,
-            "kind": node.kind.value if hasattr(node.kind, "value") else str(node.kind),
+            "kind": node.node_type.value if hasattr(node.node_type, "value") else str(node.node_type),
             "name": node.attrs.get("name", ""),
             "file": node.attrs.get("file", ""),
             "line": node.attrs.get("line", 0),
@@ -116,9 +115,9 @@ def _filter_nodes(
     return results
 
 
-def _match_kind(node_kind: NodeKind, filter_kind: str) -> bool:
+def _match_kind(node_type: NodeType, filter_kind: str) -> bool:
     """Check if node kind matches filter."""
-    kind_str = node_kind.value if hasattr(node_kind, "value") else str(node_kind)
+    kind_str = node_type.value if hasattr(node_type, "value") else str(node_type)
     filter_lower = filter_kind.lower()
 
     # Direct match
