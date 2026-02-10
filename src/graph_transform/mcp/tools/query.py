@@ -3,6 +3,7 @@ Query Tool - Find nodes in the code graph.
 
 FR2: Agents can query for node IDs matching patterns via `query` tool
 FR12-16: Query by pattern, kind, file with complete results
+FR33-38: Structured error responses with actionable suggestions
 """
 
 from __future__ import annotations
@@ -14,6 +15,13 @@ from typing import Any
 
 from graph_transform.io.builder import build_graph_from_source as build_graph
 from graph_transform.core.typed_graph import NodeType, TypedGraph
+from graph_transform.core.errors import (
+    ErrorCode,
+    ViolationType,
+    ErrorDetails,
+    SuggestionFactory,
+    create_error_response,
+)
 
 
 def query_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -31,34 +39,49 @@ def query_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
     path = args.get("path")
     if not path:
-        return {
-            "status": "error",
-            "error": {
-                "code": "MISSING_PATH",
-                "message": "path is required"
-            }
-        }
+        return create_error_response(
+            ErrorCode.MISSING_PATH,
+            "path is required",
+            phase=ViolationType.INPUT_VALIDATION,
+            suggestions=SuggestionFactory.for_target_not_found("path"),
+        )
 
     path_obj = Path(path)
     if not path_obj.exists():
-        return {
-            "status": "error",
-            "error": {
-                "code": "PATH_NOT_FOUND",
-                "message": f"Path not found: {path}"
-            }
-        }
+        return create_error_response(
+            ErrorCode.PATH_NOT_FOUND,
+            f"Path not found: {path}",
+            phase=ViolationType.INPUT_VALIDATION,
+            details=ErrorDetails(file=path),
+            suggestions=SuggestionFactory.for_target_not_found(path),
+        )
 
     try:
         graph = build_graph(path_obj)
+    except SyntaxError as e:
+        return create_error_response(
+            ErrorCode.PARSE_ERROR,
+            str(e),
+            phase=ViolationType.PARSE,
+            details=ErrorDetails(
+                file=str(path_obj),
+                line=getattr(e, "lineno", None),
+                column=getattr(e, "offset", None),
+                source_line=getattr(e, "text", None),
+            ),
+            suggestions=SuggestionFactory.for_parse_error(
+                str(path_obj),
+                getattr(e, "lineno", None),
+            ),
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "error": {
-                "code": "PARSE_ERROR",
-                "message": str(e)
-            }
-        }
+        return create_error_response(
+            ErrorCode.PARSE_ERROR,
+            str(e),
+            phase=ViolationType.PARSE,
+            details=ErrorDetails(file=str(path_obj)),
+            suggestions=SuggestionFactory.for_parse_error(str(path_obj)),
+        )
 
     pattern = args.get("pattern")
     kind = args.get("kind")

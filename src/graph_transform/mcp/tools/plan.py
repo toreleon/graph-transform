@@ -5,6 +5,7 @@ FR3: Agents can create transformation plans via `plan` tool
 FR24: Plans include all affected files and edit locations
 FR25: Plans include summary of changes
 FR32: Verification runs automatically during plan creation
+FR33-38: Structured error responses with actionable suggestions
 """
 
 from __future__ import annotations
@@ -14,6 +15,13 @@ from typing import Any
 
 from graph_transform.io.builder import build_graph_from_source as build_graph
 from graph_transform.core.primitives import CompositionRegistry
+from graph_transform.core.errors import (
+    ErrorCode,
+    ViolationType,
+    ErrorDetails,
+    SuggestionFactory,
+    create_error_response,
+)
 from graph_transform.rewriting.invariants import (
     InvariantRegistry,
     InvariantSeverity,
@@ -37,69 +45,92 @@ def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
     params = args.get("params", {})
 
     if not path:
-        return {
-            "status": "error",
-            "error": {
-                "code": "MISSING_PATH",
-                "message": "path is required"
-            }
-        }
+        return create_error_response(
+            ErrorCode.MISSING_PATH,
+            "path is required",
+            phase=ViolationType.INPUT_VALIDATION,
+            suggestions=SuggestionFactory.for_target_not_found("path"),
+        )
 
     if not operator:
-        return {
-            "status": "error",
-            "error": {
-                "code": "MISSING_OPERATOR",
-                "message": "operator is required"
-            }
-        }
+        available = list(CompositionRegistry.list_compositions())
+        return create_error_response(
+            ErrorCode.MISSING_OPERATOR,
+            "operator is required",
+            phase=ViolationType.INPUT_VALIDATION,
+            suggestions=SuggestionFactory.for_unknown_operator("", available),
+        )
 
     path_obj = Path(path)
     if not path_obj.exists():
-        return {
-            "status": "error",
-            "error": {
-                "code": "PATH_NOT_FOUND",
-                "message": f"Path not found: {path}"
-            }
-        }
+        return create_error_response(
+            ErrorCode.PATH_NOT_FOUND,
+            f"Path not found: {path}",
+            phase=ViolationType.INPUT_VALIDATION,
+            details=ErrorDetails(file=path),
+            suggestions=SuggestionFactory.for_target_not_found(path),
+        )
 
     try:
         graph = build_graph(path_obj)
+    except SyntaxError as e:
+        return create_error_response(
+            ErrorCode.PARSE_ERROR,
+            str(e),
+            phase=ViolationType.PARSE,
+            details=ErrorDetails(
+                file=str(path_obj),
+                line=getattr(e, "lineno", None),
+                column=getattr(e, "offset", None),
+                source_line=getattr(e, "text", None),
+            ),
+            suggestions=SuggestionFactory.for_parse_error(
+                str(path_obj),
+                getattr(e, "lineno", None),
+            ),
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "error": {
-                "code": "PARSE_ERROR",
-                "message": str(e)
-            }
-        }
+        return create_error_response(
+            ErrorCode.PARSE_ERROR,
+            str(e),
+            phase=ViolationType.PARSE,
+            details=ErrorDetails(file=str(path_obj)),
+            suggestions=SuggestionFactory.for_parse_error(str(path_obj)),
+        )
 
     # Get the composition
     operator_upper = operator.upper()
     composition_cls = CompositionRegistry.get(operator_upper)
+    available = list(CompositionRegistry.list_compositions())
 
     if composition_cls is None:
-        return {
-            "status": "error",
-            "error": {
-                "code": "UNKNOWN_OPERATOR",
-                "message": f"Unknown operator: {operator}",
-                "available": list(CompositionRegistry.list_compositions())
-            }
-        }
+        return create_error_response(
+            ErrorCode.UNKNOWN_OPERATOR,
+            f"Unknown operator: {operator}",
+            phase=ViolationType.INPUT_VALIDATION,
+            suggestions=SuggestionFactory.for_unknown_operator(operator, available),
+            available=available,  # Keep for backwards compat
+        )
 
     try:
         composition = CompositionRegistry.create(operator_upper, **params)
         primitives = list(composition.primitives(graph))
+    except ValueError as e:
+        # Precondition-type errors (missing target, etc.)
+        return create_error_response(
+            ErrorCode.PRECONDITION_FAILED,
+            str(e),
+            phase=ViolationType.PRECONDITION,
+            suggestions=SuggestionFactory.for_target_not_found(
+                params.get("target", "unknown")
+            ),
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "error": {
-                "code": "PLAN_ERROR",
-                "message": str(e)
-            }
-        }
+        return create_error_response(
+            ErrorCode.PLAN_ERROR,
+            str(e),
+            phase=ViolationType.INTERNAL,
+        )
 
     # Collect affected files and generate plan
     affected_files = set()

@@ -213,34 +213,45 @@ class PythonEmitter:
         name = edit.details.get("name", "new_function")
         line = edit.line
 
-        # Generate function stub
-        func_code = f"\ndef {name}():\n    pass\n"
+        # Generate function stub with proper structure
+        func_def = f"def {name}():\n    pass"
 
         if line is not None:
             lines = source.split("\n")
-            # Insert after the specified line
+            # Insert after the specified line with blank line separation
             insert_idx = min(line, len(lines))
-            lines.insert(insert_idx, func_code.strip())
+            # Add blank line before if not at start and prev line isn't blank
+            if insert_idx > 0 and lines[insert_idx - 1].strip():
+                lines.insert(insert_idx, "")
+                insert_idx += 1
+            lines.insert(insert_idx, func_def)
+            lines.insert(insert_idx + 1, "")  # Blank line after
             return "\n".join(lines)
         else:
-            # Append to end
-            return source.rstrip() + "\n" + func_code
+            # Append to end with blank line separation
+            return source.rstrip() + "\n\n" + func_def + "\n"
 
     def _apply_add_class(self, source: str, edit: EditInstruction) -> str:
         """Add a new class definition."""
         name = edit.details.get("name", "NewClass")
         line = edit.line
 
-        # Generate class stub
-        class_code = f"\nclass {name}:\n    pass\n"
+        # Generate class stub with proper structure
+        class_def = f"class {name}:\n    pass"
 
         if line is not None:
             lines = source.split("\n")
             insert_idx = min(line, len(lines))
-            lines.insert(insert_idx, class_code.strip())
+            # Add blank line before if not at start and prev line isn't blank
+            if insert_idx > 0 and lines[insert_idx - 1].strip():
+                lines.insert(insert_idx, "")
+                insert_idx += 1
+            lines.insert(insert_idx, class_def)
+            lines.insert(insert_idx + 1, "")  # Blank line after
             return "\n".join(lines)
         else:
-            return source.rstrip() + "\n" + class_code
+            # Append to end with blank line separation
+            return source.rstrip() + "\n\n" + class_def + "\n"
 
     def _apply_delete(self, source: str, edit: EditInstruction) -> str:
         """Delete a node from source code."""

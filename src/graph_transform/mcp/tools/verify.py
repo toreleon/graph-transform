@@ -8,6 +8,7 @@ FR28: System verifies all references are resolvable after transformation
 FR29: System detects scope violations
 FR30: System validates preconditions for each operator
 FR31: System validates postconditions after transformation
+FR33-38: Structured error responses with actionable suggestions
 """
 
 from __future__ import annotations
@@ -17,6 +18,13 @@ from typing import Any
 
 from graph_transform.io.builder import build_graph_from_source as build_graph
 from graph_transform.io.serialization import load_graph
+from graph_transform.core.errors import (
+    ErrorCode,
+    ViolationType,
+    ErrorDetails,
+    SuggestionFactory,
+    create_error_response,
+)
 from graph_transform.rewriting.invariants import (
     InvariantRegistry,
     InvariantLayer,
@@ -45,45 +53,61 @@ def verify_tool(args: dict[str, Any]) -> dict[str, Any]:
     stop_on_error = args.get("stop_on_error", False)
 
     if not path and not graph_file:
-        return {
-            "status": "error",
-            "error": {
-                "code": "MISSING_INPUT",
-                "message": "Either 'path' or 'graph' is required"
-            }
-        }
+        return create_error_response(
+            ErrorCode.MISSING_PATH,
+            "Either 'path' or 'graph' is required",
+            phase=ViolationType.INPUT_VALIDATION,
+            suggestions=SuggestionFactory.for_target_not_found("path or graph"),
+        )
 
     try:
         if graph_file:
             graph_path = Path(graph_file)
             if not graph_path.exists():
-                return {
-                    "status": "error",
-                    "error": {
-                        "code": "GRAPH_NOT_FOUND",
-                        "message": f"Graph file not found: {graph_file}"
-                    }
-                }
+                return create_error_response(
+                    ErrorCode.PATH_NOT_FOUND,
+                    f"Graph file not found: {graph_file}",
+                    phase=ViolationType.INPUT_VALIDATION,
+                    details=ErrorDetails(file=graph_file),
+                    suggestions=SuggestionFactory.for_target_not_found(graph_file),
+                )
             graph = load_graph(graph_path)
         else:
             path_obj = Path(path)
             if not path_obj.exists():
-                return {
-                    "status": "error",
-                    "error": {
-                        "code": "PATH_NOT_FOUND",
-                        "message": f"Path not found: {path}"
-                    }
-                }
+                return create_error_response(
+                    ErrorCode.PATH_NOT_FOUND,
+                    f"Path not found: {path}",
+                    phase=ViolationType.INPUT_VALIDATION,
+                    details=ErrorDetails(file=path),
+                    suggestions=SuggestionFactory.for_target_not_found(path),
+                )
             graph = build_graph(path_obj)
+    except SyntaxError as e:
+        file_path = graph_file or path
+        return create_error_response(
+            ErrorCode.PARSE_ERROR,
+            str(e),
+            phase=ViolationType.PARSE,
+            details=ErrorDetails(
+                file=file_path,
+                line=getattr(e, "lineno", None),
+                column=getattr(e, "offset", None),
+                source_line=getattr(e, "text", None),
+            ),
+            suggestions=SuggestionFactory.for_parse_error(
+                file_path,
+                getattr(e, "lineno", None),
+            ),
+        )
     except Exception as e:
-        return {
-            "status": "error",
-            "error": {
-                "code": "LOAD_ERROR",
-                "message": str(e)
-            }
-        }
+        file_path = graph_file or path
+        return create_error_response(
+            ErrorCode.INTERNAL_ERROR,
+            str(e),
+            phase=ViolationType.INTERNAL,
+            details=ErrorDetails(file=file_path),
+        )
 
     # Parse layer filter if provided
     layers = None
@@ -91,14 +115,14 @@ def verify_tool(args: dict[str, Any]) -> dict[str, Any]:
         try:
             layers = {InvariantLayer[layer_filter.upper()]}
         except KeyError:
-            return {
-                "status": "error",
-                "error": {
-                    "code": "INVALID_LAYER",
-                    "message": f"Unknown layer: {layer_filter}. Valid layers: "
-                               f"{', '.join(l.name.lower() for l in InvariantLayer)}"
-                }
-            }
+            valid_layers = [l.name.lower() for l in InvariantLayer]
+            return create_error_response(
+                ErrorCode.PRECONDITION_FAILED,
+                f"Unknown layer: {layer_filter}. Valid layers: {', '.join(valid_layers)}",
+                phase=ViolationType.INPUT_VALIDATION,
+                suggestions=[],
+                available_layers=valid_layers,
+            )
 
     # Parse minimum severity
     try:

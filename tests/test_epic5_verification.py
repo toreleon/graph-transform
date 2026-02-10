@@ -154,7 +154,7 @@ class TestStory51VerifyToolInfrastructure:
         result = verify_tool({})
 
         assert result["status"] == "error"
-        assert result["error"]["code"] == "MISSING_INPUT"
+        assert result["error"]["code"] == "MISSING_PATH"
 
     def test_verify_handles_nonexistent_path(self):
         """Given path does not exist, Then returns PATH_NOT_FOUND error."""
@@ -164,11 +164,11 @@ class TestStory51VerifyToolInfrastructure:
         assert result["error"]["code"] == "PATH_NOT_FOUND"
 
     def test_verify_handles_nonexistent_graph(self):
-        """Given graph file does not exist, Then returns GRAPH_NOT_FOUND error."""
+        """Given graph file does not exist, Then returns PATH_NOT_FOUND error."""
         result = verify_tool({"graph": "/nonexistent/graph.json"})
 
         assert result["status"] == "error"
-        assert result["error"]["code"] == "GRAPH_NOT_FOUND"
+        assert result["error"]["code"] == "PATH_NOT_FOUND"
 
 
 # =============================================================================
