@@ -24,15 +24,15 @@
 - [x] 3.7: Update All References
 
 ## Epic 4: Transformation Planning
-- [ ] 4.1: Plan Tool Infrastructure
-- [ ] 4.2: RENAME Operator
-- [ ] 4.3: MOVE Operator
-- [ ] 4.4: EXTRACT Operator
-- [ ] 4.5: INLINE Operator
-- [ ] 4.6: ADD_GUARD Operator
-- [ ] 4.7: CHANGE_SIGNATURE Operator
-- [ ] 4.8: WRAP Operator
-- [ ] 4.9: Plan Summary and Affected Files
+- [x] 4.1: Plan Tool Infrastructure
+- [x] 4.2: RENAME Operator
+- [x] 4.3: MOVE Operator
+- [x] 4.4: EXTRACT Operator
+- [x] 4.5: INLINE Operator
+- [x] 4.6: ADD_GUARD Operator
+- [x] 4.7: CHANGE_SIGNATURE Operator
+- [x] 4.8: WRAP Operator
+- [x] 4.9: Plan Summary and Affected Files
 
 ## Epic 5: Plan Verification
 - [ ] 5.1: Verify Tool Infrastructure
@@ -58,12 +58,12 @@
 
 ## Summary
 - **Total Stories:** 42
-- **Completed:** 17
+- **Completed:** 26
 - **In Progress:** 0
-- **Remaining:** 25
+- **Remaining:** 16
 
 ## Current Focus
-**Epic 3 COMPLETE**
+**Epic 4 COMPLETE**
 
 ## Recent Commits
 (updated by Ralph Loop)

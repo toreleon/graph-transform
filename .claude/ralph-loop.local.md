@@ -1,10 +1,10 @@
 ---
 active: true
 iteration: 1
-max_iterations: 25
-completion_promise: "EPIC 3
+max_iterations: 0
+completion_promise: "EPIC 4
 COMPLETE"
-started_at: "2026-02-10T05:50:37Z"
+started_at: "2026-02-10T05:58:41Z"
 ---
 
 # graph-transform Development Loop
@@ -211,4 +211,4 @@ If tests keep failing:
 When ALL stories complete across ALL epics, output:
 ```
 <promise>GRAPH-TRANSFORM COMPLETE</promise>
-``` Focus on Epic 3 only. Output <promise>EPIC 3 COMPLETE</promise> when done.
+``` Focus on Epic 4 only. Output <promise>EPIC 4 COMPLETE</promise> when done.

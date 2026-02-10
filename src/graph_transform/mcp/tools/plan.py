@@ -80,13 +80,13 @@ def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
             "error": {
                 "code": "UNKNOWN_OPERATOR",
                 "message": f"Unknown operator: {operator}",
-                "available": list(CompositionRegistry.list_names())
+                "available": list(CompositionRegistry.list_compositions())
             }
         }
 
     try:
         composition = CompositionRegistry.create(operator_upper, **params)
-        primitives = composition.to_primitives(graph)
+        primitives = list(composition.primitives(graph))
     except Exception as e:
         return {
             "status": "error",
