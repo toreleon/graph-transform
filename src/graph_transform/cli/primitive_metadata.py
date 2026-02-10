@@ -134,6 +134,7 @@ COMPOSITION_TYPES = [
     "ADD_GUARD",
     "CHANGE_SIGNATURE",
     "WRAP",
+    "UPDATE_IMPORT",
 ]
 
 COMPOSITION_DESCRIPTIONS: dict[str, str] = {
@@ -144,6 +145,7 @@ COMPOSITION_DESCRIPTIONS: dict[str, str] = {
     "ADD_GUARD": "Add a guard/check before an operation (null check, bounds check, etc.)",
     "CHANGE_SIGNATURE": "Change a callable's signature and update all call sites",
     "WRAP": "Wrap code in a construct (try/catch, with, async, etc.)",
+    "UPDATE_IMPORT": "Update import statements when a symbol moves between modules",
 }
 
 COMPOSITION_PARAMS: dict[str, dict[str, str]] = {
@@ -187,6 +189,12 @@ COMPOSITION_PARAMS: dict[str, dict[str, str]] = {
         "target": "Node ID to wrap (required)",
         "wrapper_kind": "Kind of wrapper: try_catch, with, async, loop, etc. (required)",
         "wrapper_attrs": "Attributes for the wrapper (optional)",
+    },
+    "UPDATE_IMPORT": {
+        "symbol": "The imported symbol name (required)",
+        "old_module": "Original module path (required)",
+        "new_module": "New module path (required)",
+        "file": "Specific file to update (optional, updates all if omitted)",
     },
 }
 

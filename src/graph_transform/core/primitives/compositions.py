@@ -274,9 +274,12 @@ class Rename(Composition):
 class Move(Composition):
     """Move an entity from one scope to another.
 
-    MOVE = DELETE(containment_edge) + INSERT(new_containment_edge) + UPDATE*(references)
+    MOVE = DELETE(containment_edge) + INSERT(new_containment_edge)
+           + DELETE(exports_edge)? + UPDATE*(references)
 
     This changes where an entity "lives" in the code structure.
+    When a symbol is moved, any EXPORTS edge from the source scope is removed
+    (the symbol is no longer part of the source's public API).
     """
 
     target: str  # Node ID to move
@@ -284,27 +287,48 @@ class Move(Composition):
     to_scope: str  # Target container
     edge_kind: EdgeKind = EdgeKind.CONTAINS
     update_references: bool = True
+    preserve_export: bool = False  # If True, add EXPORTS edge to destination
 
     @property
     def name(self) -> str:
         return "MOVE"
 
     def primitives(self, graph: TypedGraph) -> Iterator[Primitive]:
-        # 1. Remove from old scope
+        from graph_transform.core.typed_graph import EdgeType
+
+        # 1. Remove from old scope (containment)
         yield DeleteEdge(
             source=self.from_scope,
             target=self.target,
             edge_kind=self.edge_kind,
         )
 
-        # 2. Add to new scope
+        # 2. Add to new scope (containment)
         yield InsertEdge(
             source=self.to_scope,
             target=self.target,
             edge_kind=self.edge_kind,
         )
 
-        # 3. Update qualified references if needed
+        # 3. Handle EXPORTS edge: remove from source if exists
+        # This is language-agnostic (Python __all__, JS export, Rust pub, etc.)
+        for edge in graph.get_edges_to(self.target):
+            if edge.edge_type == EdgeType.EXPORTS and edge.source == self.from_scope:
+                yield DeleteEdge(
+                    source=self.from_scope,
+                    target=self.target,
+                    edge_kind=EdgeKind.EXPORTS,
+                )
+                # Optionally add export to destination
+                if self.preserve_export:
+                    yield InsertEdge(
+                        source=self.to_scope,
+                        target=self.target,
+                        edge_kind=EdgeKind.EXPORTS,
+                    )
+                break
+
+        # 4. Update qualified references if needed
         if self.update_references:
             node = graph.get_node(self.target)
             if node:
@@ -566,11 +590,98 @@ class CompositionRegistry:
 
     @classmethod
     def create(cls, name: str, **kwargs: Any) -> Composition | None:
-        """Create a composition instance by name."""
+        """Create a composition instance by name.
+
+        Handles type conversion for string params to enums,
+        and normalizes parameter aliases for common mistakes.
+        """
         comp_class = cls.get(name)
         if comp_class:
-            return comp_class(**kwargs)
+            # Convert string params to enums where needed
+            converted = kwargs.copy()
+            if "node_kind" in converted and isinstance(converted["node_kind"], str):
+                try:
+                    converted["node_kind"] = NodeKind(converted["node_kind"])
+                except ValueError:
+                    pass  # Leave as-is if not a valid enum value
+            if "edge_kind" in converted and isinstance(converted["edge_kind"], str):
+                try:
+                    converted["edge_kind"] = EdgeKind(converted["edge_kind"])
+                except ValueError:
+                    pass
+
+            # Handle MOVE parameter aliases (common LLM mistakes)
+            if name.upper() == "MOVE":
+                converted = cls._normalize_move_params(converted)
+
+            return comp_class(**converted)
         return None
+
+    @classmethod
+    def _normalize_move_params(cls, params: dict[str, Any]) -> dict[str, Any]:
+        """Normalize MOVE parameters to handle common LLM mistakes.
+
+        Handles aliases like:
+        - destination -> to_scope
+        - scope -> to_scope (when no to_scope)
+        - position.scope -> to_scope
+        """
+        result = params.copy()
+
+        # Handle nested position object (common LLM mistake)
+        if "position" in result and isinstance(result["position"], dict):
+            pos = result.pop("position")
+            if "scope" in pos and "to_scope" not in result:
+                result["to_scope"] = pos["scope"]
+
+        # Handle destination alias
+        if "destination" in result and "to_scope" not in result:
+            result["to_scope"] = result.pop("destination")
+
+        # Handle bare scope alias
+        if "scope" in result and "to_scope" not in result:
+            result["to_scope"] = result.pop("scope")
+
+        return result
+
+
+@dataclass
+class UpdateImport(Composition):
+    """Update import statements when a symbol moves between modules.
+
+    UPDATE_IMPORT = UPDATE(import_module)
+
+    Changes import paths when a symbol is moved from one module to another.
+    Example: `from old_module import func` -> `from new_module import func`
+    """
+
+    symbol: str  # The imported symbol name
+    old_module: str  # Original module path
+    new_module: str  # New module path
+    file: str | None = None  # Optional: specific file to update
+
+    @property
+    def name(self) -> str:
+        return "UPDATE_IMPORT"
+
+    def primitives(self, graph: TypedGraph) -> Iterator[Primitive]:
+        # Find all import nodes that match the symbol and old module
+        for node_id, node in graph.nodes.items():
+            if not node_id.startswith("import:"):
+                continue
+
+            imp_name = node.attrs.get("name", "")
+            imp_module = node.attrs.get("module", "")
+
+            # Check if this import matches
+            if imp_name == self.symbol and self.old_module in imp_module:
+                # If a specific file is specified, only update that file
+                if self.file and node.attrs.get("file") != self.file:
+                    continue
+
+                # Calculate new module path
+                new_mod = imp_module.replace(self.old_module, self.new_module)
+                yield Update(target=node_id, prop="module", value=new_mod)
 
 
 # Register standard compositions
@@ -581,6 +692,7 @@ CompositionRegistry.register("INLINE", Inline)
 CompositionRegistry.register("ADD_GUARD", AddGuard)
 CompositionRegistry.register("CHANGE_SIGNATURE", ChangeSignature)
 CompositionRegistry.register("WRAP", Wrap)
+CompositionRegistry.register("UPDATE_IMPORT", UpdateImport)
 
 
 # =============================================================================

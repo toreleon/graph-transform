@@ -85,7 +85,7 @@ class TestListCommand:
         assert "primitives" in data
         assert "compositions" in data
         assert len(data["primitives"]) == 5
-        assert len(data["compositions"]) == 7
+        assert len(data["compositions"]) == 8  # Including UPDATE_IMPORT
 
 
 # =============================================================================

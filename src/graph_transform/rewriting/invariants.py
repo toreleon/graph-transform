@@ -189,6 +189,18 @@ class GraphSchema:
             source_types=frozenset({NodeType.MODULE}),
             target_types=frozenset({NodeType.IMPORT}),
         ),
+        EdgeType.CONTAINS: EdgeConstraint(
+            edge_type=EdgeType.CONTAINS,
+            source_types=frozenset({NodeType.MODULE}),
+            target_types=frozenset({NodeType.CLASS, NodeType.FUNCTION}),
+            target_max=1,  # Each function/class can only be in one module
+        ),
+        EdgeType.EXPORTS: EdgeConstraint(
+            edge_type=EdgeType.EXPORTS,
+            source_types=frozenset({NodeType.MODULE}),
+            target_types=frozenset({NodeType.CLASS, NodeType.FUNCTION}),
+            # A module can export multiple symbols, and a symbol can only be exported by its defining module
+        ),
         EdgeType.DEFINED_IN: EdgeConstraint(
             edge_type=EdgeType.DEFINED_IN,
             source_types=frozenset({NodeType.CLASS, NodeType.FUNCTION}),
@@ -412,6 +424,7 @@ def _check_schema_conformance(graph: TypedGraph) -> list[InvariantViolation]:
 # =============================================================================
 
 _CONTAINMENT_EDGE_TYPES = frozenset({
+    EdgeType.CONTAINS,
     EdgeType.CONTAINS_METHOD,
     EdgeType.CONTAINS_FIELD,
     EdgeType.HAS_PARAMETER,

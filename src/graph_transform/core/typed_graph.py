@@ -50,6 +50,7 @@ class NodeType(Enum):
 class EdgeType(Enum):
     """Types of edges in the code graph."""
 
+    CONTAINS = "contains"  # Generic containment: module contains function/class
     CONTAINS_METHOD = "contains_method"
     CONTAINS_FIELD = "contains_field"
     HAS_PARAMETER = "has_parameter"
@@ -57,6 +58,7 @@ class EdgeType(Enum):
     CALLS = "calls"
     INHERITS = "inherits"
     IMPORTS = "imports"
+    EXPORTS = "exports"  # Module exports symbol via __all__
     DEFINED_IN = "defined_in"
     CALLER_OF = "caller_of"
     REFERENCES = "references"

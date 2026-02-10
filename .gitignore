@@ -37,3 +37,6 @@ Thumbs.db
 # Distribution
 *.whl
 *.tar.gz
+
+_bmad/
+_bmad-output/

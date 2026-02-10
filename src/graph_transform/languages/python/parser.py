@@ -102,6 +102,9 @@ class _ASTGraphBuilder(ast.NodeVisitor):
             src/requests/utils.py -> requests.utils
             tornado/netutil.py -> tornado.netutil
             /tmp/.../mod.py -> mod (temp files use just the stem)
+            /workspace/celery/app/task.py -> celery.app.task
+            workspace/celery_task-name/celery/app/task.py -> celery.app.task
+            /path/to/workspace/task_name/pkg/mod.py -> pkg.mod
         """
         path = Path(file_path)
         parts = list(path.with_suffix("").parts)
@@ -114,13 +117,27 @@ class _ASTGraphBuilder(ast.NodeVisitor):
                     # It's a temp path, just use the file stem
                     return path.stem
 
+        # Find 'workspace' anywhere in path and skip everything up to and including it
+        # This handles both /workspace/... and /path/to/workspace/...
+        try:
+            workspace_idx = [p.lower() for p in parts].index("workspace")
+            parts = parts[workspace_idx + 1:]
+        except ValueError:
+            pass  # No 'workspace' in path
+
+        # Remove leading path separators, root, and dots
+        while parts and parts[0] in ("", "/", "."):
+            parts = parts[1:]
+
         # Remove common source directory prefixes
         prefixes_to_remove = {"lib", "src", "source", "sources"}
         while parts and parts[0].lower() in prefixes_to_remove:
             parts = parts[1:]
 
-        # Also remove leading path separators or root
-        while parts and (parts[0] == "" or parts[0] == "/"):
+        # Remove task-name-like directories (e.g., "celery_annotation-utils", "django_combine-utils")
+        # These are workspace task directories, not Python packages
+        # Pattern: contains underscore followed by more path (task_description format)
+        while parts and "_" in parts[0] and len(parts) > 1:
             parts = parts[1:]
 
         # If no parts left, use the stem

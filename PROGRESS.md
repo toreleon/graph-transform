@@ -15,13 +15,13 @@
 - [x] 2.6: Query Tool - Complete Result Format
 
 ## Epic 3: Transformation Primitives & Reference Tracking
-- [ ] 3.1: INSERT Primitive
-- [ ] 3.2: DELETE Primitive
-- [ ] 3.3: UPDATE Primitive
-- [ ] 3.4: Primitive Composition Framework
-- [ ] 3.5: Find All Call Sites
-- [ ] 3.6: Find All Import References
-- [ ] 3.7: Update All References
+- [x] 3.1: INSERT Primitive
+- [x] 3.2: DELETE Primitive
+- [x] 3.3: UPDATE Primitive
+- [x] 3.4: Primitive Composition Framework
+- [x] 3.5: Find All Call Sites
+- [x] 3.6: Find All Import References
+- [x] 3.7: Update All References
 
 ## Epic 4: Transformation Planning
 - [ ] 4.1: Plan Tool Infrastructure
@@ -58,12 +58,12 @@
 
 ## Summary
 - **Total Stories:** 42
-- **Completed:** 10
+- **Completed:** 17
 - **In Progress:** 0
-- **Remaining:** 32
+- **Remaining:** 25
 
 ## Current Focus
-**Epic 2 COMPLETE**
+**Epic 3 COMPLETE**
 
 ## Recent Commits
 (updated by Ralph Loop)

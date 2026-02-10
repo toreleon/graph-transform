@@ -373,11 +373,12 @@ class TestEditsFromResults:
         result = rename.execute(sample_graph)
 
         params = {"target": "func:foo", "new_name": "bar"}
-        edits = edits_from_composition_result(result, "RENAME", params)
+        edits, hints = edits_from_composition_result(result, "RENAME", params)
 
         assert len(edits) == 1
         assert edits[0].edit_type == "rename"
         assert edits[0].details["new_name"] == "bar"
+        assert hints == []  # RENAME doesn't generate hints
 
 
 # =========================================================================

@@ -33,6 +33,50 @@ from graph_transform.io.builder import build_graph_from_files, build_graph_from_
 
 
 # =============================================================================
+# MOVE parameter auto-detection
+# =============================================================================
+
+
+def _auto_detect_move_from_scope(
+    graph: TypedGraph,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Auto-detect from_scope for MOVE composition if not provided.
+
+    Finds the module that contains the target node by looking at CONTAINS edges.
+    """
+    if "from_scope" in params and params["from_scope"]:
+        return params  # Already specified
+
+    target = params.get("target", "")
+    if not target:
+        return params
+
+    # Find the containing module by looking at incoming CONTAINS edges
+    for edge in graph.get_edges_to(target):
+        if edge.edge_type.value == "contains":
+            source_node = graph.get_node(edge.source)
+            if source_node and source_node.node_type.value == "module":
+                result = params.copy()
+                result["from_scope"] = edge.source
+                return result
+
+    # Fallback: try to infer from target's file attribute
+    target_node = graph.get_node(target)
+    if target_node:
+        file_path = target_node.attrs.get("file", "")
+        if file_path:
+            # Find module with matching file
+            for node_id, node in graph.nodes.items():
+                if node_id.startswith("module:") and node.attrs.get("file") == file_path:
+                    result = params.copy()
+                    result["from_scope"] = node_id
+                    return result
+
+    return params
+
+
+# =============================================================================
 # EditInstruction
 # =============================================================================
 
@@ -657,7 +701,13 @@ def plan(
 
             else:  # composition
                 comp_type = resolve_composition(step.name)
-                comp = CompositionRegistry.create(comp_type, **step.params)
+                step_params = step.params
+
+                # Auto-detect from_scope for MOVE if not provided
+                if comp_type.upper() == "MOVE":
+                    step_params = _auto_detect_move_from_scope(current, step_params)
+
+                comp = CompositionRegistry.create(comp_type, **step_params)
                 if comp is None:
                     pipeline_error = f"Step {i+1}: Failed to create composition '{comp_type}'"
                     print_error(pipeline_error)
@@ -671,7 +721,7 @@ def plan(
                     break
 
                 all_edits, step_hints = edits_from_composition_result(
-                    result, step.name, step.params, graph=current
+                    result, step.name, step_params, graph=current
                 )
                 all_hints.extend(step_hints)
 

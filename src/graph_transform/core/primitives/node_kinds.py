@@ -59,6 +59,10 @@ class EdgeKind(Enum):
     ACCESSES = "accesses"           # Access reads/writes binding
     IMPORTS = "imports"             # Reference imports from container
 
+    # === Visibility/Exports ===
+    EXPORTS = "exports"             # Container exports entity (public API)
+                                    # Python: __all__, JS: export, Rust: pub, Go: capitalized
+
     # === Type Relationships ===
     INHERITS = "inherits"           # Type inheritance (extends)
     IMPLEMENTS = "implements"       # Interface implementation
@@ -100,10 +104,11 @@ def map_edge_kind_to_edge_type(kind: EdgeKind) -> str:
     Returns the string value that can be used with EdgeType enum.
     """
     mapping = {
-        EdgeKind.CONTAINS: "contains_method",  # or contains_field
+        EdgeKind.CONTAINS: "contains",  # Generic containment
         EdgeKind.CALLS: "calls",
         EdgeKind.INHERITS: "inherits",
         EdgeKind.IMPORTS: "imports",
+        EdgeKind.EXPORTS: "exports",  # Public API exports (Python __all__, JS export, etc.)
         EdgeKind.DEFINES: "defined_in",
         EdgeKind.REFERENCES: "references",
         EdgeKind.HAS_PARAMETER: "has_parameter",
