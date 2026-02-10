@@ -4,6 +4,7 @@ Plan Tool - Create transformation plans.
 FR3: Agents can create transformation plans via `plan` tool
 FR24: Plans include all affected files and edit locations
 FR25: Plans include summary of changes
+FR32: Verification runs automatically during plan creation
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ from typing import Any
 
 from graph_transform.io.builder import build_graph_from_source as build_graph
 from graph_transform.core.primitives import CompositionRegistry
+from graph_transform.rewriting.invariants import (
+    InvariantRegistry,
+    InvariantSeverity,
+)
 
 
 def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -114,7 +119,40 @@ def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
             "params": prim_dict
         })
 
-    return {
+    # FR32: Run automatic verification during planning
+    verify = args.get("verify", True)  # Default to True
+    verification_result = None
+
+    if verify:
+        registry = InvariantRegistry()
+        violations = registry.verify_graph(
+            graph,
+            min_severity=InvariantSeverity.ERROR,  # Only report errors
+        )
+
+        if violations:
+            verification_result = {
+                "valid": False,
+                "error_count": len(violations),
+                "violations": [
+                    {
+                        "rule": v.invariant_name,
+                        "message": v.message,
+                        "node": v.node_id,
+                        "layer": v.layer.name.lower() if v.layer else None,
+                        "fix_hint": v.fix_hint,
+                    }
+                    for v in violations
+                ],
+            }
+        else:
+            verification_result = {
+                "valid": True,
+                "error_count": 0,
+                "violations": [],
+            }
+
+    result = {
         "status": "ok",
         "operator": operator_upper,
         "params": params,
@@ -124,9 +162,14 @@ def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
             "summary": {
                 "primitive_count": len(primitives),
                 "file_count": len(affected_files),
-            }
-        }
+            },
+        },
     }
+
+    if verification_result is not None:
+        result["verification"] = verification_result
+
+    return result
 
 
 def _primitive_to_dict(primitive: Any) -> dict[str, Any]:
