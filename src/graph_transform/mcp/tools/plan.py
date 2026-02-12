@@ -115,6 +115,7 @@ def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
     try:
         composition = CompositionRegistry.create(operator_upper, **params)
         primitives = list(composition.primitives(graph))
+        edit_instructions = composition.edit_instructions(graph)
     except ValueError as e:
         # Precondition-type errors (missing target, etc.)
         return create_error_response(
@@ -183,15 +184,26 @@ def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
                 "violations": [],
             }
 
+    # Add files from edit instructions to affected_files
+    for edit in edit_instructions:
+        if "file" in edit:
+            affected_files.add(edit["file"])
+        if "old_path" in edit:
+            affected_files.add(edit["old_path"])
+        if "new_path" in edit:
+            affected_files.add(edit["new_path"])
+
     result = {
         "status": "ok",
         "operator": operator_upper,
         "params": params,
         "plan": {
             "primitives": edits,
+            "edits": edit_instructions,
             "affected_files": sorted(affected_files),
             "summary": {
                 "primitive_count": len(primitives),
+                "edit_count": len(edit_instructions),
                 "file_count": len(affected_files),
             },
         },

@@ -248,15 +248,10 @@ def _create_mcp_server():
     return mcp
 
 
-def serve(host: str = "127.0.0.1", port: int = 8080) -> None:
-    """Start the MCP server with StreamableHttp transport.
-
-    Args:
-        host: Host to bind to
-        port: Port to bind to
-    """
+def serve() -> None:
+    """Start the MCP server with stdio transport (default for MCP)."""
     mcp = _create_mcp_server()
-    mcp.run(transport="streamable-http", host=host, port=port)
+    mcp.run()
 
 
 if __name__ == "__main__":

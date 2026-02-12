@@ -126,6 +126,23 @@ class Composition(ABC):
         """
         ...
 
+    def edit_instructions(self, graph: TypedGraph) -> list[dict[str, Any]]:
+        """Generate file-level edit instructions for this composition.
+
+        This bridges graph primitives to actionable file edits.
+        Override in subclasses to provide specific edit generation.
+
+        Args:
+            graph: The graph to analyze
+
+        Returns:
+            List of edit instruction dicts with keys:
+            - type: "rename_file", "replace_text", "delete_lines", etc.
+            - file: Target file path
+            - Additional type-specific keys
+        """
+        return []  # Default: no edits (subclasses override)
+
     def execute(self, graph: TypedGraph) -> CompositionResult:
         """Execute this composition on the graph.
 
@@ -268,6 +285,87 @@ class Rename(Composition):
                     refs.append(n.id)
 
         return refs
+
+    def edit_instructions(self, graph: TypedGraph) -> list[dict[str, Any]]:
+        """Generate file-level edits for rename operation."""
+        edits: list[dict[str, Any]] = []
+        node = graph.get_node(self.target)
+        if not node:
+            return edits
+
+        old_name = node.attrs.get("name", "")
+        file_path = node.attrs.get("file", "")
+
+        # Check if this is a module rename
+        if self.target.startswith("module:"):
+            # Module rename = file rename + import updates
+            if file_path:
+                # Generate file rename
+                old_file = file_path
+                # Replace last component of path
+                if "/" in old_file:
+                    dir_part = old_file.rsplit("/", 1)[0]
+                    new_file = f"{dir_part}/{self.new_name}.py"
+                else:
+                    new_file = f"{self.new_name}.py"
+
+                edits.append({
+                    "type": "rename_file",
+                    "old_path": old_file,
+                    "new_path": new_file,
+                })
+
+                # Find all files that import from this module
+                old_module = old_name
+                new_module = old_module.rsplit(".", 1)[0] + "." + self.new_name if "." in old_module else self.new_name
+
+                # Get the short module name for alias replacement (e.g., "params" -> "param")
+                old_short_name = old_module.rsplit(".", 1)[-1]
+                new_short_name = self.new_name
+
+                seen_files: set[str] = set()
+                for n in graph.nodes.values():
+                    if n.node_type.name == "IMPORT":
+                        import_module = n.attrs.get("module", "")
+                        import_name = n.attrs.get("name", "")
+
+                        # Match: "from fastapi.params import X" (module == old_module)
+                        # Match: "from fastapi import params" (module == parent and name == short_name)
+                        is_direct_import = import_module == old_module or import_module.startswith(old_module + ".")
+                        is_named_import = (
+                            import_name == old_short_name and
+                            old_module.rsplit(".", 1)[0] == import_module if "." in old_module else import_module == ""
+                        )
+
+                        if is_direct_import or is_named_import:
+                            import_file = n.attrs.get("file", "")
+                            if import_file and import_file != old_file and import_file not in seen_files:
+                                seen_files.add(import_file)
+                                # Replace module path in import statement
+                                edits.append({
+                                    "type": "replace_text",
+                                    "file": import_file,
+                                    "old_text": old_module,
+                                    "new_text": new_module,
+                                })
+                                # Also replace module alias usage (e.g., params.Body -> param.Body)
+                                edits.append({
+                                    "type": "replace_text",
+                                    "file": import_file,
+                                    "old_text": f"{old_short_name}.",
+                                    "new_text": f"{new_short_name}.",
+                                })
+        else:
+            # Regular symbol rename - replace occurrences in file
+            if file_path:
+                edits.append({
+                    "type": "replace_text",
+                    "file": file_path,
+                    "pattern": rf"\b{old_name}\b",
+                    "replacement": self.new_name,
+                })
+
+        return edits
 
 
 @dataclass
